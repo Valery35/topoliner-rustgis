@@ -666,6 +666,39 @@ pub fn check_items(items: &[Item], s: &Settings) -> Vec<Finding> {
     findings
 }
 
+/// Проверка по группам.
+///
+/// Нужна там, где слой не является единым покрытием, например когда зоны
+/// нескольких пластов лежат в одном слое. Объекты разных групп
+/// накладываются друг на друга по замыслу, и без группировки каждое такое
+/// наложение попадает в перекрытия, дубликаты и вложения.
+///
+/// Каждый объект принадлежит ровно одной группе, поэтому пообъектные
+/// проверки не удваиваются. Группы обходятся по возрастанию ключа.
+pub fn check_grouped(items: &[Item], s: &Settings, keys: &[String]) -> Vec<Finding> {
+    let mut groups: std::collections::BTreeMap<&str, Vec<&Item>> =
+        std::collections::BTreeMap::new();
+    for (item, key) in items.iter().zip(keys) {
+        groups.entry(key.as_str()).or_default().push(item);
+    }
+    let mut out = Vec::new();
+    for (key, members) in groups {
+        let part: Vec<Item> = members
+            .into_iter()
+            .map(|it| Item {
+                fid: it.fid,
+                geom: it.geom.clone(),
+                parts: it.parts.clone(),
+            })
+            .collect();
+        for mut f in check_items(&part, s) {
+            f.key = key.to_string();
+            out.push(f);
+        }
+    }
+    out
+}
+
 /// Сводка по видам нарушений в порядке первого появления: сколько auto,
 /// сколько review, максимум и медиана величины.
 pub struct Slot {

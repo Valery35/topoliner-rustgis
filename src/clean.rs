@@ -219,6 +219,8 @@ pub struct CleanRun {
     pub protect: bool,
     pub validate: bool,
     pub report: bool,
+    /// Кольца слоя-эталона. Они не изменяются и дают вершины-лидеры.
+    pub fixed: Vec<Vec<Pt>>,
 }
 
 /// 1.05 Сшивка узлов и вершин: выходы прогона и строки журнала.
@@ -282,7 +284,7 @@ pub fn topology_clean(
             },
             mode: run.mode,
             frozen,
-            fixed: Vec::new(),
+            fixed: run.fixed.clone(),
         },
     );
 
@@ -310,6 +312,12 @@ pub fn topology_clean(
 
     let s = &done.stats;
     let mut lines = vec![pick(lang, "Чтение слоя...", "Reading the layer...")];
+    if !run.fixed.is_empty() {
+        lines.push(say(
+            pick(lang, "Эталон: колец %d", "Reference layer: %d rings"),
+            &[run.fixed.len().to_string()],
+        ));
+    }
     lines.push(say(
         pick(
             lang,
@@ -453,6 +461,9 @@ pub struct NodesRun {
     pub crossings: bool,
     pub max_passes: usize,
     pub report: bool,
+    /// Кольца опорного слоя. Их вершины дают узлы входу, сами они
+    /// не изменяются.
+    pub fixed: Vec<Vec<Pt>>,
 }
 
 /// 1.06 Вставка недостающих узлов: выходы прогона и строки журнала.
@@ -470,6 +481,12 @@ pub fn insert_nodes(
     let vertices_before: usize = flat.rings.iter().map(Vec::len).sum();
 
     let mut lines = vec![pick(lang, "Чтение слоя...", "Reading the layer...")];
+    if !run.fixed.is_empty() {
+        lines.push(say(
+            pick(lang, "Опорный слой: колец %d", "Donor layer: %d rings"),
+            &[run.fixed.len().to_string()],
+        ));
+    }
     lines.push(say(
         pick(
             lang,
@@ -490,12 +507,17 @@ pub fn insert_nodes(
     let (mut inserted, mut crossing, mut passes) = (0usize, 0usize, 0usize);
     let mut rings: Vec<Option<Vec<Pt>>> = current.iter().cloned().map(Some).collect();
     for step in 0..run.max_passes {
-        let done = snap::insert_nodes(
+        let done = snap::clean(
             &current,
-            Nodes {
-                tolerance: run.eps,
-                crossings: run.crossings,
-                project_onto_edge: true,
+            &Settings {
+                nodes: Nodes {
+                    tolerance: run.eps,
+                    crossings: run.crossings,
+                    project_onto_edge: true,
+                },
+                mode: Mode::Insert,
+                frozen: Vec::new(),
+                fixed: run.fixed.clone(),
             },
         );
         let added = done.stats.nodes_inserted;
@@ -679,6 +701,7 @@ mod tests {
                 crossings: true,
                 max_passes: 10,
                 report: true,
+                fixed: Vec::new(),
             },
             Lang::Ru,
         );

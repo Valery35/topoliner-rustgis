@@ -661,6 +661,56 @@ pub fn fix_items(items: &[(i64, Parts)], s: &FixSettings) -> Fixed {
     }
 }
 
+/// Очистка по группам. Объекты разных групп не сшиваются между собой
+/// и не спорят за площадь.
+pub fn fix_grouped(items: &[(i64, Parts)], s: &FixSettings, keys: &[String]) -> Fixed {
+    let mut groups: std::collections::BTreeMap<&str, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (i, key) in keys.iter().enumerate() {
+        groups.entry(key.as_str()).or_default().push(i);
+    }
+    let mut shapes: Vec<Parts> = vec![Vec::new(); items.len()];
+    let mut stats = FixStats::default();
+    let mut left: Vec<Finding> = Vec::new();
+    for (key, members) in groups {
+        let part: Vec<(i64, Parts)> = members.iter().map(|&i| items[i].clone()).collect();
+        let done = fix_items(&part, s);
+        for (at, &i) in members.iter().enumerate() {
+            if let Some(parts) = done.shapes.get(at) {
+                shapes[i] = parts.clone();
+            }
+        }
+        for mut f in done.left {
+            f.key = key.to_string();
+            left.push(f);
+        }
+        let d = done.stats;
+        stats.dup_vertices += d.dup_vertices;
+        stats.spikes += d.spikes;
+        stats.vertices_moved += d.vertices_moved;
+        stats.nodes_inserted += d.nodes_inserted;
+        stats.tiny_parts += d.tiny_parts;
+        stats.tiny_holes += d.tiny_holes;
+        stats.made_valid += d.made_valid;
+        stats.valid_rejected += d.valid_rejected;
+        stats.overlaps_fixed += d.overlaps_fixed;
+        stats.overlaps_left += d.overlaps_left;
+        stats.gaps_filled += d.gaps_filled;
+        stats.gaps_left += d.gaps_left;
+        stats.tiny_features_dropped += d.tiny_features_dropped;
+        stats.features_lost += d.features_lost;
+        stats.rings_frozen += d.rings_frozen;
+        stats.max_move = stats.max_move.max(d.max_move);
+        stats.area_before += d.area_before;
+        stats.area_after += d.area_after;
+    }
+    Fixed {
+        shapes,
+        stats,
+        left,
+    }
+}
+
 fn pick(lang: Lang, ru: &str, en: &str) -> String {
     match lang {
         Lang::Ru => ru.to_string(),

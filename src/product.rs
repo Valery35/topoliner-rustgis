@@ -139,7 +139,11 @@ fn topology_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     if s.tolerance <= 0.0 {
         return Err(Failure::Values("TOLERANCE".into()));
     }
-    let findings = audit::check_items(&items, &s);
+    let keys = group_keys(values, items.iter().map(|it| it.fid));
+    let findings = match &keys {
+        Some(keys) => audit::check_grouped(&items, &s, keys),
+        None => audit::check_items(&items, &s),
+    };
 
     // Ограничители допуска: слишком крупный допуск схлопывает короткие
     // рёбра и узкие объекты. Считаются по кольцам входного слоя.
@@ -164,7 +168,10 @@ fn topology_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         }
     }
     let hint = audit::tolerance_hint(&findings, s.tolerance, edge_p05, min_width);
-    let messages = audit::report(items.len(), &s, &findings, hint.as_ref(), lang);
+    let mut messages = audit::report(items.len(), &s, &findings, hint.as_ref(), lang);
+    if let Some(keys) = &keys {
+        messages.insert(1, grouping_line(values, keys, lang));
+    }
     let out = json!({"OUTPUT": audit::findings_layer(&findings, lang)});
     Ok((out, messages))
 }
@@ -186,6 +193,71 @@ fn coverage_items(values: &J, lang: Lang) -> Result<Vec<arcs::Shape>, Failure> {
         }));
     }
     Ok(items)
+}
+
+/// Поля группировки, как их задаёт диалог модуля.
+fn group_fields(values: &J) -> Vec<String> {
+    match &values["FIELDS"] {
+        J::Array(a) => a.iter().filter_map(J::as_str).map(str::to_string).collect(),
+        J::String(s) => s
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Ключ группы для каждого объекта, если группировка задана.
+fn group_keys(values: &J, fids: impl Iterator<Item = i64>) -> Option<Vec<String>> {
+    let fields = group_fields(values);
+    if fields.is_empty() {
+        return None;
+    }
+    let attrs: std::collections::HashMap<i64, &J> = values["INPUT"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["id"].as_i64().map(|id| (id, &f["attrs"])))
+        .collect();
+    Some(
+        fids.map(|fid| {
+            attrs
+                .get(&fid)
+                .map_or_else(String::new, |a| assembly::group_key(a, &fields))
+        })
+        .collect(),
+    )
+}
+
+/// Строка журнала о группировке.
+fn grouping_line(values: &J, keys: &[String], lang: Lang) -> String {
+    let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
+    match lang {
+        Lang::Ru => "Группировка по %s: групп %d",
+        Lang::En => "Grouped by %s: %d groups",
+    }
+    .replacen("%s", &group_fields(values).join(", "), 1)
+    .replacen("%d", &unique.len().to_string(), 1)
+}
+
+/// Кольца слоя-эталона, замкнутые повтором первой вершины.
+///
+/// Эталон не изменяется, его вершины становятся лидерами при слиянии
+/// и дают узлы рёбрам входа при вставке.
+fn reference_rings(values: &J) -> Vec<Vec<crate::rings::Pt>> {
+    let Some(layer) = values.get("REFERENCE").filter(|v| v.is_array()) else {
+        return Vec::new();
+    };
+    let is_polygon = values["@REFERENCE"]["geometry"] != "line";
+    let mut rings = Vec::new();
+    for (_fid, parts) in values::shapes_of(layer, is_polygon) {
+        for part in parts {
+            rings.extend(part);
+        }
+    }
+    rings
 }
 
 /// Сетка опознания общих вершин и отклонение при их поиске.
@@ -499,7 +571,11 @@ fn topology_fix(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         },
         max_area_loss: 0.25,
     };
-    let done = topo_fix::fix_items(&layer.items, &s);
+    let keys = group_keys(values, layer.items.iter().map(|(fid, _)| *fid));
+    let done = match &keys {
+        Some(keys) => topo_fix::fix_grouped(&layer.items, &s, keys),
+        None => topo_fix::fix_items(&layer.items, &s),
+    };
     let written = done.shapes.iter().filter(|p| !p.is_empty()).count();
     let mut out = serde_json::Map::new();
     out.insert(
@@ -509,7 +585,10 @@ fn topology_fix(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     if flag(values, "REMAINS", false) {
         out.insert("REMAINS".into(), audit::findings_layer(&done.left, lang));
     }
-    let messages = topo_fix::report(layer.items.len(), written, &done, &s, lang);
+    let mut messages = topo_fix::report(layer.items.len(), written, &done, &s, lang);
+    if let Some(keys) = &keys {
+        messages.insert(1, grouping_line(values, keys, lang));
+    }
     Ok((J::Object(out), messages))
 }
 
@@ -570,7 +649,14 @@ fn line_fix(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         .replacen("%d", &items.len().to_string(), 1)
         .replacen("%g", &audit::g_format(s.tolerance), 1),
     ];
-    messages.extend(line_checks::fix_report(layer.items.len(), written, &done, lang));
+    let lost = layer.items.len() - written;
+    messages.extend(line_checks::fix_report(
+        layer.items.len(),
+        written,
+        lost,
+        &done,
+        lang,
+    ));
     Ok((J::Object(out), messages))
 }
 
@@ -647,6 +733,7 @@ fn topology_clean(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         protect: flag(values, "PROTECT", true),
         validate: flag(values, "VALIDATE", true),
         report: flag(values, "REPORT", false),
+        fixed: reference_rings(values),
     };
     Ok(clean::topology_clean(
         &layer.items,
@@ -666,6 +753,7 @@ fn insert_nodes(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         crossings: flag(values, "CROSSINGS", true),
         max_passes: values.get("MAX_PASSES").and_then(J::as_u64).unwrap_or(10) as usize,
         report: flag(values, "REPORT", false),
+        fixed: reference_rings(values),
     };
     Ok(clean::insert_nodes(
         &layer.items,

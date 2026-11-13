@@ -212,6 +212,20 @@ fn runs_match_the_module(tool: &str) {
     }
 }
 
+/// Все прогоны файла разобраны по инструментам, пропущенных нет.
+#[test]
+fn every_run_is_checked() {
+    let all = runs();
+    let list = all["runs"].as_array().expect("runs");
+    let mine: usize = OPTIONS
+        .offered
+        .iter()
+        .map(|name| list.iter().filter(|r| r["tool"] == *name).count())
+        .sum();
+    assert_eq!(mine, list.len(), "в файле есть прогоны чужих инструментов");
+    assert_eq!(OPTIONS.offered.len(), 11);
+}
+
 /// 1.01 Проверка топологии полигонов.
 #[test]
 fn topology_audit_matches_the_module() {

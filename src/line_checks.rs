@@ -864,8 +864,9 @@ pub fn fix_lines(items: &[(i64, Vec<Pt>)], s: &FixSettings) -> Fixed {
     }
 }
 
-/// Строки журнала очистки линий.
-pub fn fix_report(items: usize, written: usize, f: &Fixed, lang: Lang) -> Vec<String> {
+/// Строки журнала очистки линий. `lost` - объекты, у которых не осталось
+/// ни одной части.
+pub fn fix_report(items: usize, written: usize, lost: usize, f: &Fixed, lang: Lang) -> Vec<String> {
     let pick = |ru: &str, en: &str| match lang {
         Lang::Ru => ru.to_string(),
         Lang::En => en.to_string(),
@@ -934,6 +935,9 @@ pub fn fix_report(items: usize, written: usize, f: &Fixed, lang: Lang) -> Vec<St
             .replacen("%d", &items.to_string(), 1)
             .replacen("%d", &written.to_string(), 1),
     );
+    if lost > 0 {
+        out.push(one("Объектов потеряно: %d", "Objects lost: %d", lost));
+    }
     out
 }
 
