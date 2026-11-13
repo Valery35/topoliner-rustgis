@@ -24,11 +24,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod arcs;
+pub mod assembly;
 pub mod audit;
 pub mod backend;
 pub mod boundaries;
 pub mod clean;
 pub mod coverage;
+pub mod cut;
 pub mod line_checks;
 pub mod manifest;
 pub mod product;

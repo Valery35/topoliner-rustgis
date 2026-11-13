@@ -236,6 +236,18 @@ fn line_fix_matches_the_module() {
     runs_match_the_module("linefix");
 }
 
+/// 1.07 Контроль сборки по атрибуту.
+#[test]
+fn assembly_check_matches_the_module() {
+    runs_match_the_module("assemblycheck");
+}
+
+/// 1.08 Ввод контуров в покрытие.
+#[test]
+fn cut_into_coverage_matches_the_module() {
+    runs_match_the_module("cutintocoverage");
+}
+
 /// 2.01 Топологическое упрощение.
 #[test]
 fn topology_simplify_matches_the_module() {

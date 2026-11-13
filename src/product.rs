@@ -18,7 +18,10 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::{arcs, boundaries, clean, coverage, line_checks, simplify, snap, topo_fix, values};
+use crate::{
+    arcs, assembly, boundaries, clean, coverage, cut, line_checks, simplify, snap, topo_fix,
+    values,
+};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
@@ -30,6 +33,8 @@ pub const OPTIONS: Options = Options {
         "linefix",
         "topologyclean",
         "insertnodes",
+        "assemblycheck",
+        "cutintocoverage",
         "topologysimplify",
         "boundaries",
         "coverage",
@@ -62,6 +67,8 @@ impl Product for Topoliner {
             "lineaudit" => line_audit(values, lang),
             "topologyfix" => topology_fix(values, lang),
             "linefix" => line_fix(values, lang),
+            "assemblycheck" => assembly_check(values, lang),
+            "cutintocoverage" => cut_into_coverage(values, lang),
             "topologysimplify" => topology_simplify(values, lang),
             "boundaries" => boundaries_of(values, lang),
             "coverage" => coverage_of(values, lang),
@@ -251,6 +258,175 @@ fn line_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let findings = line_checks::check_lines(&items, &s);
     let messages = line_checks::report(items.len(), &s, &findings, lang);
     let out = json!({"OUTPUT": line_checks::findings_layer(&findings, lang)});
+    Ok((out, messages))
+}
+
+/// 1.08 Ввод контуров в покрытие.
+fn cut_into_coverage(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    if !values["CUT"].is_array() {
+        return Err(Failure::Values("CUT".into()));
+    }
+    let cuts = values::shapes_of(&values["CUT"], true);
+    if cuts.is_empty() {
+        return Err(Failure::Run(match lang {
+            Lang::Ru => "В слое контуров нет геометрий.".into(),
+            Lang::En => "The outline layer has no geometries.".into(),
+        }));
+    }
+    let mode = match values.get("MODE").and_then(J::as_u64).unwrap_or(0) {
+        1 => cut::Mode::Clip,
+        2 => cut::Mode::Inset,
+        _ => cut::Mode::Overlay,
+    };
+    let area = number(values, "AREA").unwrap_or(0.0);
+    let node_eps = number(values, "NODE_EPS").unwrap_or(1e-6);
+
+    // Состояние покрытия: объекты в порядке входа, дальше созданные.
+    let mut order: Vec<i64> = layer.items.iter().map(|(fid, _)| *fid).collect();
+    let mut objects: std::collections::BTreeMap<i64, (Vec<J>, arcs::Parts)> =
+        std::collections::BTreeMap::new();
+    for ((fid, parts), attrs) in layer.items.iter().zip(&layer.attrs) {
+        let row: Vec<J> = layer
+            .fields
+            .iter()
+            .map(|(name, _)| attrs[name].clone())
+            .collect();
+        objects.insert(*fid, (row, parts.clone()));
+    }
+    let mut t = cut::Totals {
+        cuts: cuts.len(),
+        items: layer.items.len(),
+        area_before: layer
+            .items
+            .iter()
+            .map(|(_f, p)| crate::backend::area(&crate::backend::geom_of(p)))
+            .sum(),
+        ..cut::Totals::default()
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut next_key: i64 = -1;
+    for (number, (_cut_fid, cut_parts)) in cuts.iter().enumerate() {
+        let Some(box_of) = cut::bbox(cut_parts) else {
+            continue;
+        };
+        let near: Vec<(i64, arcs::Parts)> = order
+            .iter()
+            .filter_map(|key| objects.get(key).map(|(_v, p)| (*key, p.clone())))
+            .filter(|(_k, p)| cut::bbox(p).is_some_and(|b| cut::overlap(b, box_of)))
+            .collect();
+        let done = cut::cut_into_coverage(&near, cut_parts, area, node_eps, mode);
+
+        // Атрибуты снимаются до правки: поглощённый сосед исчезает.
+        let rows: Vec<J> = done
+            .donors
+            .iter()
+            .filter_map(|key| objects.get(key))
+            .map(|(row, _p)| {
+                J::Object(
+                    layer
+                        .fields
+                        .iter()
+                        .zip(row)
+                        .map(|((name, _), v)| (name.clone(), v.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        for (key, parts) in &done.changed {
+            if parts.is_empty() {
+                objects.remove(key);
+                t.swallowed += 1;
+            } else if let Some(slot) = objects.get_mut(key) {
+                slot.1 = parts.clone();
+                t.changed += 1;
+            }
+        }
+        for (key, parts) in &done.noded {
+            if let Some(slot) = objects.get_mut(key)
+                && !parts.is_empty()
+            {
+                slot.1 = parts.clone();
+            }
+        }
+        t.nodes += done.nodes;
+        if !done.created.is_empty() {
+            let refs: Vec<&J> = rows.iter().collect();
+            objects.insert(
+                next_key,
+                (cut::inherited_values(&refs, &layer.fields), done.created),
+            );
+            order.push(next_key);
+            next_key -= 1;
+            t.added += 1;
+        }
+        t.outside += done.outside;
+        t.dropped += done.dropped;
+        if cuts.len() <= 20 {
+            lines.push(cut::cut_line(
+                number + 1,
+                done.donors.len(),
+                done.outside,
+                lang,
+            ));
+        }
+    }
+
+    let records: Vec<(Vec<J>, arcs::Parts)> = order
+        .iter()
+        .filter_map(|key| objects.get(key).cloned())
+        .collect();
+    t.written = records.iter().filter(|(_v, p)| !p.is_empty()).count();
+    t.area_after = records
+        .iter()
+        .map(|(_v, p)| crate::backend::area(&crate::backend::geom_of(p)))
+        .sum();
+    let out = json!({"OUTPUT": cut::coverage_layer(&records, &layer.fields)});
+    let mut messages = cut::report(&t, mode, area, lang);
+    // Строки про контуры идут сразу после режима наложения.
+    for (i, line) in lines.into_iter().enumerate() {
+        messages.insert(2 + i, line);
+    }
+    Ok((out, messages))
+}
+
+/// 1.07 Контроль сборки по атрибуту.
+fn assembly_check(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    let fields: Vec<String> = match &values["FIELDS"] {
+        J::Array(a) => a.iter().filter_map(J::as_str).map(str::to_string).collect(),
+        J::String(s) => s
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    if fields.is_empty() {
+        return Err(Failure::Values(match lang {
+            Lang::Ru => "Укажите хотя бы одно поле группировки.".into(),
+            Lang::En => "Give at least one grouping field.".into(),
+        }));
+    }
+    let items: Vec<(i64, arcs::Parts, String)> = layer
+        .items
+        .iter()
+        .zip(&layer.attrs)
+        .map(|((fid, parts), attrs)| {
+            (*fid, parts.clone(), assembly::group_key(attrs, &fields))
+        })
+        .collect();
+    let s = assembly::Settings {
+        area_threshold: number(values, "AREA").unwrap_or(0.0),
+        max_gap: number(values, "MAX_GAP").unwrap_or(0.0),
+        ignore_holes: flag(values, "IGNORE_HOLES", false),
+        is_line: !layer.is_polygon,
+    };
+    let (findings, groups) = assembly::check_assembly(&items, &s);
+    let messages = assembly::report(&fields, &groups, &s, lang);
+    let out = json!({"OUTPUT": assembly::findings_layer(&findings, lang)});
     Ok((out, messages))
 }
 

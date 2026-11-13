@@ -74,6 +74,9 @@ pub enum Kind {
     Crossing,
     ZeroLength,
     ShortLine,
+    // Нарушения сборки по атрибуту.
+    GroupSplit,
+    GroupHole,
 }
 
 impl Kind {
@@ -101,6 +104,8 @@ impl Kind {
             Kind::Crossing => "crossing",
             Kind::ZeroLength => "zero_length",
             Kind::ShortLine => "short_line",
+            Kind::GroupSplit => "group_split",
+            Kind::GroupHole => "group_hole",
         }
     }
 
@@ -129,6 +134,8 @@ impl Kind {
             Kind::Crossing => "пересечение без узла",
             Kind::ZeroLength => "линия нулевой длины",
             Kind::ShortLine => "линия короче порога",
+            Kind::GroupSplit => "группа распалась на части",
+            Kind::GroupHole => "внутреннее кольцо в группе",
         }
     }
 
@@ -159,6 +166,8 @@ impl Kind {
             | Kind::Crossing
             | Kind::ZeroLength
             | Kind::ShortLine => self.code(),
+            Kind::GroupSplit => "group split into parts",
+            Kind::GroupHole => "interior ring within a group",
         }
     }
 }
