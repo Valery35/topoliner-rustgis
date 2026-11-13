@@ -23,14 +23,65 @@ pub const PLUGIN_JSON: &str = include_str!("../plugin.json");
 /// QGIS оно остаётся как было.
 pub const HIDDEN: &[&str] = &["keep_z"];
 
-/// Раздел `tools` манифеста и русские строки к нему, без скрытых полей.
+/// Единицы в подписях полей, английские.
+///
+/// Модуль QGIS считает в системе координат слоя, и подписи у него
+/// об этом и говорят. Слои RustGIS приходят в градусах, крейт переводит
+/// их в метры зоны UTM, и расчёт всегда идёт в метрах. Подпись «в
+/// единицах CRS слоя» в окне RustGIS была бы неправдой, поэтому она
+/// заменяется. Правка живёт только здесь, `tools.json` модуля и его
+/// руководство остаются как есть.
+///
+/// Длинные образцы стоят раньше коротких: замена идёт по порядку.
+const UNITS_EN: &[(&str, &str)] = &[
+    ("in layer CRS units", "in metres of the UTM zone"),
+    ("in square CRS units", "in square metres of the UTM zone"),
+    ("in CRS units", "in metres of the UTM zone"),
+];
+
+/// Те же единицы по-русски.
+const UNITS_RU: &[(&str, &str)] = &[
+    ("в единицах CRS слоя", "в метрах зоны UTM"),
+    ("в кв. единицах CRS", "в кв. метрах зоны UTM"),
+    ("в единицах CRS", "в метрах зоны UTM"),
+];
+
+fn units(text: &str, table: &[(&str, &str)]) -> String {
+    let mut out = text.to_string();
+    for (from, to) in table {
+        out = out.replace(from, to);
+    }
+    out
+}
+
+/// Замена единиц во всех строках значения.
+fn retell(v: &mut J, table: &[(&str, &str)]) {
+    match v {
+        J::String(s) => *s = units(s, table),
+        J::Array(a) => a.iter_mut().for_each(|x| retell(x, table)),
+        J::Object(m) => m.values_mut().for_each(|x| retell(x, table)),
+        _ => {}
+    }
+}
+
+/// Раздел `tools` манифеста и русские строки к нему, без скрытых полей
+/// и с единицами окна RustGIS.
 pub fn tools_section(catalog: &Catalog) -> (Vec<J>, serde_json::Map<String, J>) {
     let (mut tools, ru) = rustgis_kit::manifest::tools_section(catalog, &crate::product::OPTIONS);
     for t in tools.iter_mut() {
         if let Some(params) = t["params"].as_array_mut() {
             params.retain(|p| !HIDDEN.contains(&p["name"].as_str().unwrap_or("")));
         }
+        retell(t, UNITS_EN);
     }
+    // Ключ перевода - английская строка, поэтому меняются обе стороны.
+    let ru: serde_json::Map<String, J> = ru
+        .into_iter()
+        .map(|(k, mut v)| {
+            retell(&mut v, UNITS_RU);
+            (units(&k, UNITS_EN), v)
+        })
+        .collect();
     // Перевод нужен только тем строкам, что остались в разделе.
     let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &tools {

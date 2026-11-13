@@ -401,4 +401,11 @@ fn manifest_tools_follow_tools_json() {
             );
         }
     }
+    // Единицы в окне - метры зоны UTM, а не система координат слоя.
+    // Расчёт всегда идёт в метрах, и подпись обязана это говорить.
+    let text = serde_json::to_string(&m).expect("manifest");
+    assert!(!text.contains("CRS units"), "в манифесте осталось CRS units");
+    assert!(!text.contains("единицах CRS"), "в манифесте осталось единицах CRS");
+    assert!(text.contains("metres of the UTM zone"));
+    assert!(text.contains("метрах зоны UTM") || text.contains("метры зоны UTM"));
 }
