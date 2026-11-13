@@ -326,11 +326,7 @@ fn the_cut_edge_is_one_arc() {
 }
 
 /// Те же обещания на покрытии в четыреста полигонов.
-///
-/// Идёт не каждый прогон: он минуты, а не секунды. Запуск -
-/// `cargo test -- --ignored`.
 #[test]
-#[ignore = "долгий, для проверки на объёме"]
 fn a_bigger_coverage_holds_the_guarantees() {
     let items = grid(20);
     let s = fix_settings(2.0);
