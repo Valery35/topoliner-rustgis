@@ -1,0 +1,43 @@
+{
+  "id": "topoliner",
+  "name": "Topoliner",
+  "version": "0.1.0",
+  "description": "Topoliner for RustGIS: topology of polygon and line coverages. The tools find violations and tell technical debris from possible meaning. They compute as the QGIS plugin does and are checked against its runs.",
+  "author": "Inform++ LLC",
+  "license": "GPL-3.0-or-later",
+  "runtime": "process",
+  "session": true,
+  "run": { "windows": ["bin/topoliner-rustgis.exe", "rustgis-plugin"] },
+  "minRustgisVersion": "0.5.0",
+  "commands": [
+    { "id": "about", "label": "About\nTopoliner", "help": "About the program: version, a short description and links to the website, GitHub and the Topoliner channels.", "icon": "info", "params": "{} (answers the window title, the program title and version, text paragraphs and links with labels in the RustGIS language)" }
+  ],
+  "tools": [
+    {"id":"topologyaudit","name":"1.01 Polygon topology check","params":[{"help":"The polygon layer to check. The layer is not modified, findings go\nto a separate point layer.","kind":"vectorLayer","label":"Layer to check (polygons)","name":"input","required":true},{"default":2.0,"help":"The distance below which a discrepancy counts as a technical error.","kind":"number","label":"Tolerance (in layer CRS units)","name":"tolerance"},{"default":1.0,"help":"The area below which a fragment counts as technical debris. A\nreasonable starting point is the square of the tolerance.","kind":"number","label":"Debris area threshold (in square CRS units)","name":"area"},{"help":"Needed when the layer is not a single coverage, for example when\nzones of several seams lie in one layer. Features of different\ngroups overlap by design, and without grouping each such overlap\ngoes into overlaps, duplicates and nesting.","kind":"field","label":"Grouping field or fields (optional)","name":"fields"},{"default":0.0,"help":"A cavity larger than this area is taken as part of the design and is\nnot a finding. This is a pillar, a lake, an unmapped area. A small\nhole in a coverage is a defect, a very large one almost never is.","kind":"number","label":"Cavity larger than this area is not counted as a gap (0 - ignore)","name":"cavity"},{"default":true,"help":"Pairwise comparison of features. On large layers this is the longest\npart of the check, and it can be switched off when only vertices and\ngaps are of interest.","kind":"bool","label":"Find overlaps, duplicates and nested objects","name":"do_overlaps"},{"default":true,"help":"A gap is a hole in the union of the coverage. A gap that opens onto\nthe outer edge is not a hole and is not found here. Vertex snapping\ncloses it.","kind":"bool","label":"Find gaps in the coverage","name":"do_gaps"},{"default":true,"help":"A vertex of one feature lies on or near a neighbour's edge, and the\nneighbour has no node at that point. Such places hinder snapping and\nbuilding the coverage model.","kind":"bool","label":"Find vertices without a node on a neighbour edge","name":"do_nodes"}],"summary":"The layer is not modified.","toolbox":"Topoliner"}
+  ],
+  "i18n": {
+    "ru": {
+      "The layer is not modified.": "Слой не изменяется.",
+      "1.01 Polygon topology check": "1.01 Проверка топологии полигонов",
+      "A cavity larger than this area is taken as part of the design and is\nnot a finding. This is a pillar, a lake, an unmapped area. A small\nhole in a coverage is a defect, a very large one almost never is.": "Полость крупнее этой площади считается частью замысла и находкой\nне является. Это целик, озеро, незакартированный участок.\nМелкая дыра в покрытии это дефект, очень крупная почти всегда нет.",
+      "A gap is a hole in the union of the coverage. A gap that opens onto\nthe outer edge is not a hole and is not found here. Vertex snapping\ncloses it.": "Щель это дыра в объединении покрытия. Зазор, выходящий на внешний край,\nдырой не является и здесь не находится. Его закрывает сшивка вершин.",
+      "A vertex of one feature lies on or near a neighbour's edge, and the\nneighbour has no node at that point. Such places hinder snapping and\nbuilding the coverage model.": "Вершина одного объекта лежит на ребре соседа или рядом с ним,\nа у соседа в этой точке узла нет. Такие места мешают сшивке\nи построению модели покрытия.",
+      "Cavity larger than this area is not counted as a gap (0 - ignore)": "Полость крупнее этой площади щелью не считается (0 - не учитывать)",
+      "Debris area threshold (in square CRS units)": "Порог площади мусора (в кв. единицах CRS)",
+      "Find gaps in the coverage": "Искать щели в покрытии",
+      "Find overlaps, duplicates and nested objects": "Искать перекрытия, дубликаты и вложения",
+      "Find vertices without a node on a neighbour edge": "Искать вершины без узла на соседнем ребре",
+      "Grouping field or fields (optional)": "Поле или поля группировки (необязательно)",
+      "Layer to check (polygons)": "Проверяемый слой (полигоны)",
+      "Needed when the layer is not a single coverage, for example when\nzones of several seams lie in one layer. Features of different\ngroups overlap by design, and without grouping each such overlap\ngoes into overlaps, duplicates and nesting.": "Нужно, когда слой не является единым покрытием, например когда\nзоны нескольких пластов лежат в одном слое. Объекты разных групп\nнакладываются друг на друга по замыслу, и без группировки каждое\nтакое наложение попадает в перекрытия, дубликаты и вложения.",
+      "Pairwise comparison of features. On large layers this is the longest\npart of the check, and it can be switched off when only vertices and\ngaps are of interest.": "Попарное сравнение объектов. На больших слоях это самая долгая часть\nпроверки, и её можно отключить, если интересуют только вершины и щели.",
+      "The area below which a fragment counts as technical debris. A\nreasonable starting point is the square of the tolerance.": "Площадь, ниже которой фрагмент считается техническим мусором.\nРазумная точка отсчёта это квадрат допуска.",
+      "The distance below which a discrepancy counts as a technical error.": "Расстояние, ниже которого расхождение считается технической погрешностью.",
+      "The polygon layer to check. The layer is not modified, findings go\nto a separate point layer.": "Полигональный слой, который проверяется.\nСлой не изменяется, находки пишутся в отдельный слой точек.",
+      "Tolerance (in layer CRS units)": "Допуск (в единицах CRS слоя)",
+      "About\nTopoliner": "О программе\nTopoliner",
+      "About the program: version, a short description and links to the website, GitHub and the Topoliner channels.": "О программе: версия, краткое описание и ссылки на сайт, GitHub и каналы Topoliner.",
+      "Topoliner for RustGIS: topology of polygon and line coverages. The tools find violations and tell technical debris from possible meaning. They compute as the QGIS plugin does and are checked against its runs.": "Topoliner для RustGIS: топология полигональных и линейных покрытий. Инструменты находят нарушения и отделяют технический мусор от возможного смысла. Считают так же, как модуль QGIS, и сверяются с его прогонами."
+    }
+  }
+}
