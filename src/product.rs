@@ -9,6 +9,8 @@
 //! в крейте. Здесь расчёт инструментов по значениям прогона модуля
 //! и команда «О программе».
 
+use std::collections::HashMap;
+
 use rustgis_kit::catalog::Tool;
 use rustgis_kit::runner::no_command;
 use rustgis_kit::{Call, Catalog, Failure, Lang, Options, Product, Store};
@@ -16,12 +18,12 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::values;
+use crate::{arcs, boundaries, coverage, values};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
     toolbox: "Topoliner",
-    offered: &["topologyaudit"],
+    offered: &["topologyaudit", "boundaries", "coverage"],
     xy_tables: &[],
 };
 
@@ -47,6 +49,8 @@ impl Product for Topoliner {
     fn compute(&self, tool: &Tool, values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         match tool.name.as_str() {
             "topologyaudit" => topology_audit(values, lang),
+            "boundaries" => boundaries_of(values, lang),
+            "coverage" => coverage_of(values, lang),
             other => Err(Failure::Run(other.to_string())),
         }
     }
@@ -139,5 +143,74 @@ fn topology_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let hint = audit::tolerance_hint(&findings, s.tolerance, edge_p05, min_width);
     let messages = audit::report(items.len(), &s, &findings, hint.as_ref(), lang);
     let out = json!({"OUTPUT": audit::findings_layer(&findings, lang)});
+    Ok((out, messages))
+}
+
+/// Объекты покрытия: номер и части с кольцами.
+fn coverage_items(values: &J, lang: Lang) -> Result<Vec<arcs::Shape>, Failure> {
+    if !values["INPUT"].is_array() {
+        return Err(Failure::Values("INPUT".into()));
+    }
+    let items: Vec<arcs::Shape> = values::items_of(&values["INPUT"])
+        .into_iter()
+        .filter(|it| !it.parts.is_empty())
+        .map(|it| (it.fid, it.parts))
+        .collect();
+    if items.is_empty() {
+        return Err(Failure::Run(match lang {
+            Lang::Ru => "Во входном слое нет полигонов.".into(),
+            Lang::En => "The input layer has no polygons.".into(),
+        }));
+    }
+    Ok(items)
+}
+
+/// Сетка опознания общих вершин и отклонение при их поиске.
+fn grid_and_eps(values: &J) -> (f64, f64) {
+    (
+        number(values, "GRID").unwrap_or(1e-6),
+        number(values, "NODE_EPS").unwrap_or(1e-6),
+    )
+}
+
+/// 2.02 Границы полигонов линиями.
+fn boundaries_of(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let items = coverage_items(values, lang)?;
+    let (grid, node_eps) = grid_and_eps(values);
+    let field = values
+        .get("FIELD")
+        .and_then(J::as_str)
+        .filter(|s| !s.is_empty());
+    let mut side: HashMap<i64, String> = HashMap::new();
+    if let Some(name) = field {
+        for f in values["INPUT"].as_array().into_iter().flatten() {
+            let Some(id) = f["id"].as_i64() else { continue };
+            match &f["attrs"][name] {
+                J::Null => {}
+                J::String(s) => {
+                    side.insert(id, s.clone());
+                }
+                other => {
+                    side.insert(id, other.to_string());
+                }
+            }
+        }
+    }
+    let borders = boundaries::extract_boundaries(&items, grid, node_eps);
+    let messages = boundaries::report(items.len(), &borders, lang);
+    let out = json!({"OUTPUT": boundaries::borders_layer(&borders, field, &side, lang)});
+    Ok((out, messages))
+}
+
+/// 2.03 Топологическая модель покрытия.
+fn coverage_of(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let items = coverage_items(values, lang)?;
+    let (grid, node_eps) = grid_and_eps(values);
+    let model = coverage::build_coverage(&items, grid, node_eps);
+    let messages = coverage::report(items.len(), &model, lang);
+    let out = json!({
+        "NODES": coverage::nodes_layer(&model, lang),
+        "ARCS": coverage::arcs_layer(&model),
+    });
     Ok((out, messages))
 }

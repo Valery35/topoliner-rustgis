@@ -18,10 +18,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value as J, json};
 
-use rustgis_kit::Lang;
-use topoliner_rustgis::audit::Settings;
-use topoliner_rustgis::product::OPTIONS;
-use topoliner_rustgis::{audit, rings, values};
+use rustgis_kit::{Lang, Product};
+use topoliner_rustgis::product::{OPTIONS, Topoliner};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -47,95 +45,106 @@ fn catalog() -> rustgis_kit::Catalog {
     rustgis_kit::Catalog::parse(std::fs::read(path).expect("tools.json")).expect("catalog")
 }
 
-fn number(values: &J, key: &str, fallback: f64) -> f64 {
-    values.get(key).and_then(J::as_f64).unwrap_or(fallback)
+/// Значения прогона для расчёта: поля вместе со слоями входа, как их
+/// собирает крейт.
+fn run_values(r: &J) -> J {
+    let mut out = r["values"].clone();
+    if let (Some(o), Some(input)) = (out.as_object_mut(), r["input"].as_object()) {
+        for (k, v) in input {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    out
 }
 
-fn flag(values: &J, key: &str) -> bool {
-    values.get(key).and_then(J::as_bool).unwrap_or(true)
+/// Расчёт инструмента по значениям прогона.
+fn compute(r: &J, lang: Lang) -> (J, Vec<String>) {
+    let product = Topoliner { catalog: catalog() };
+    let name = r["tool"].as_str().expect("tool");
+    let tool = product.catalog.tool(name).expect("инструмента нет");
+    product
+        .compute(tool, &run_values(r), lang)
+        .unwrap_or_else(|e| unreachable!("{name}: {e:?}"))
 }
 
-/// Расчёт 1.01 по значениям прогона: слой находок и строки журнала.
-fn audit_run(r: &J, lang: Lang) -> (J, Vec<String>) {
-    let v = &r["values"];
-    let items = values::items_of(&r["input"]["INPUT"]);
-    let s = Settings {
-        tolerance: number(v, "TOLERANCE", 2.0),
-        area_threshold: number(v, "AREA", 1.0),
-        do_overlaps: flag(v, "DO_OVERLAPS"),
-        do_gaps: flag(v, "DO_GAPS"),
-        do_unsnapped: flag(v, "DO_NODES"),
-        cavity_area: number(v, "CAVITY", 0.0),
+/// Вершины геометрии объекта выхода: точка, линия или ничего.
+fn vertices(g: &J) -> Vec<Vec<f64>> {
+    let one = |p: &J| -> Vec<f64> {
+        (0..2)
+            .map(|i| p.get(i).and_then(J::as_f64).unwrap_or(f64::NAN))
+            .collect()
     };
-    let findings = audit::check_items(&items, &s);
-    let closed = values::closed_rings(&items);
-    let (_m, p05, count) = rings::segment_length_stats(&closed);
-    let edge_p05 = (count > 0).then_some(p05);
-    let mut widths: Vec<f64> = closed
-        .iter()
-        .map(|r| rings::ring_width(r))
-        .filter(|w| *w > 0.0)
-        .collect();
-    widths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let min_width = (!widths.is_empty()).then(|| widths[widths.len() / 20]);
-    let hint = audit::tolerance_hint(&findings, s.tolerance, edge_p05, min_width);
-    let messages = audit::report(items.len(), &s, &findings, hint.as_ref(), lang);
-    (audit::findings_layer(&findings, lang), messages)
+    if let Some(points) = g["points"].as_array() {
+        return points.iter().map(one).collect();
+    }
+    if g.get("xyz").is_some_and(|p| !p.is_null()) {
+        return vec![one(&g["xyz"])];
+    }
+    Vec::new()
 }
 
-/// Все прогоны 1.01: поля находок, их точки, порядок и строки журнала -
-/// как у модуля. Строки сверяются на обоих языках.
-#[test]
-fn topology_audit_matches_the_module() {
-    let cases = runs_of("topologyaudit");
-    assert!(!cases.is_empty(), "в прогонах нет topologyaudit");
+/// Один выход против образца: количество объектов, значения полей
+/// по порядку и вершины геометрии.
+fn same_layer(case: &str, key: &str, got: &J, want: &J, lang: Lang) {
+    let names: Vec<&str> = want["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .filter_map(|f| f[0].as_str())
+        .collect();
+    let gf = got["features"].as_array().expect("features");
+    let wf = want["features"].as_array().expect("features");
+    if gf.len() != wf.len() {
+        for f in gf {
+            eprintln!("{case} {key} got  {}", f["values"]);
+        }
+        for f in wf {
+            eprintln!("{case} {key} want {} {}", f["values"], f["geometry"]);
+        }
+    }
+    assert_eq!(gf.len(), wf.len(), "{case} {key}: количество объектов");
+    for (k, (g, w)) in gf.iter().zip(wf).enumerate() {
+        for (i, name) in names.iter().enumerate() {
+            let a = &g["values"][i];
+            // строки, зависящие от языка, лежат в values_en
+            let b = match (lang, w["values_en"].get(name)) {
+                (Lang::En, Some(x)) => x,
+                _ => &w["values"][i],
+            };
+            match (a.as_f64(), b.as_f64()) {
+                (Some(x), Some(y)) => {
+                    assert!((x - y).abs() < 1e-9, "{case} {key} {k} {name}: {x} {y}")
+                }
+                _ => assert_eq!(a, b, "{case} {key} {k} {name}"),
+            }
+        }
+        let (a, b) = (vertices(&g["geometry"]), vertices(&w["geometry"]));
+        assert_eq!(a.len(), b.len(), "{case} {key} {k}: вершин");
+        for (p, q) in a.iter().zip(&b) {
+            for (x, y) in p.iter().zip(q) {
+                assert!((x - y).abs() < 1e-9, "{case} {key} {k}: {x} {y}");
+            }
+        }
+    }
+}
+
+/// Все прогоны инструмента: выходы и строки журнала как у модуля,
+/// на русском и на английском.
+fn runs_match_the_module(tool: &str) {
+    let cases = runs_of(tool);
+    assert!(!cases.is_empty(), "в прогонах нет {tool}");
     for r in &cases {
         let case = r["case"].as_str().unwrap_or("");
-        let want = &r["output"]["OUTPUT"];
-        let names: Vec<&str> = want["fields"]
-            .as_array()
-            .expect("fields")
-            .iter()
-            .filter_map(|f| f[0].as_str())
-            .collect();
         for lang in [Lang::Ru, Lang::En] {
-            let (got, messages) = audit_run(r, lang);
-            let gf = got["features"].as_array().expect("features");
-            let wf = want["features"].as_array().expect("features");
-            if gf.len() != wf.len() {
-                for f in gf {
-                    eprintln!("{case} got  {}", f["values"]);
-                }
-                for f in wf {
-                    eprintln!("{case} want {} {}", f["values"], f["geometry"]);
-                }
-            }
-            assert_eq!(gf.len(), wf.len(), "{case}: количество находок");
-            for (k, (g, w)) in gf.iter().zip(wf).enumerate() {
-                for (i, name) in names.iter().enumerate() {
-                    let a = &g["values"][i];
-                    // строки, зависящие от языка, лежат в values_en
-                    let b = match (lang, w["values_en"].get(name)) {
-                        (Lang::En, Some(x)) => x,
-                        _ => &w["values"][i],
-                    };
-                    match (a.as_f64(), b.as_f64()) {
-                        (Some(x), Some(y)) => {
-                            assert!((x - y).abs() < 1e-9, "{case} {k} {name}: {x} {y}")
-                        }
-                        _ => assert_eq!(a, b, "{case} {k} {name}"),
-                    }
-                }
-                for i in 0..2 {
-                    let a = g["geometry"]["xyz"][i].as_f64();
-                    let b = w["geometry"]["xyz"][i].as_f64();
-                    match (a, b) {
-                        (Some(x), Some(y)) => {
-                            assert!((x - y).abs() < 1e-9, "{case} {k} xyz[{i}]: {x} {y}")
-                        }
-                        _ => assert_eq!(a, b, "{case} {k} xyz[{i}]"),
-                    }
-                }
+            let (got, messages) = compute(r, lang);
+            let outputs = r["output"].as_object().expect("output");
+            assert_eq!(
+                got.as_object().map(serde_json::Map::len),
+                Some(outputs.len()),
+                "{case}: количество выходов"
+            );
+            for (key, want) in outputs {
+                same_layer(case, key, &got[key], want, lang);
             }
             // Строки журнала. Первая строка прогона - имя и версия модуля,
             // у расширения своя версия, поэтому сверка идёт со второй.
@@ -153,6 +162,24 @@ fn topology_audit_matches_the_module() {
             }
         }
     }
+}
+
+/// 1.01 Проверка топологии полигонов.
+#[test]
+fn topology_audit_matches_the_module() {
+    runs_match_the_module("topologyaudit");
+}
+
+/// 2.02 Границы полигонов линиями.
+#[test]
+fn boundaries_match_the_module() {
+    runs_match_the_module("boundaries");
+}
+
+/// 2.03 Топологическая модель покрытия.
+#[test]
+fn coverage_matches_the_module() {
+    runs_match_the_module("coverage");
 }
 
 /// Прогон 1.01 через RustGIS целиком: слой приходит в градусах WGS 84,

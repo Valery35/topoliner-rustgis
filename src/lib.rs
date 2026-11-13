@@ -11,16 +11,21 @@
 //!
 //! - [`product`] - трейт `Product`: каталог, настройки, расчёт, команды;
 //! - [`audit`] - 1.01 Проверка топологии полигонов;
-//! - [`rings`], [`snap`], [`backend`] - геометрия: кольца, вставка узлов,
-//!   булевы операции;
+//! - [`boundaries`] - 2.02 Границы полигонов линиями;
+//! - [`coverage`] - 2.03 Топологическая модель покрытия;
+//! - [`rings`], [`snap`], [`arcs`], [`backend`] - геометрия: кольца,
+//!   вставка узлов, разбор на дуги, булевы операции;
 //! - [`rounding`] - округление величин до значащих цифр;
 //! - [`values`] - значения прогона модуля в объекты проверки;
 //! - [`manifest`] - раздел `tools` манифеста `plugin.json`.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod arcs;
 pub mod audit;
 pub mod backend;
+pub mod boundaries;
+pub mod coverage;
 pub mod manifest;
 pub mod product;
 pub mod rings;
