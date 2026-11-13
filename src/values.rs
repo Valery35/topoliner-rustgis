@@ -159,6 +159,58 @@ pub fn items_of(layer: &J) -> Vec<Item> {
         .collect()
 }
 
+/// Объекты слоя с частями, как их разбирает модуль. Кольца полигонов
+/// приходят замкнутыми, повтор первой вершины сохраняется. Часть линии
+/// это одна ломаная.
+pub fn shapes_of(layer: &J, is_polygon: bool) -> Vec<crate::arcs::Shape> {
+    layer
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let fid = f["id"].as_i64().unwrap_or(i as i64);
+            if !is_polygon {
+                let parts: Vec<Vec<Vec<Pt>>> = f["parts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(line_of)
+                    .map(|line| vec![line])
+                    .collect();
+                return (!parts.is_empty()).then_some((fid, parts));
+            }
+            let parts: Vec<Vec<Vec<Pt>>> = polygons_of(f)
+                .unwrap_or_else(|| parts_of(rings_of(f)))
+                .into_iter()
+                .map(|rings| rings.into_iter().map(closed).collect())
+                .collect();
+            (!parts.is_empty()).then_some((fid, parts))
+        })
+        .collect()
+}
+
+/// Ломаная из списка вершин: короче двух вершин отброшена.
+fn line_of(part: &J) -> Option<Vec<Pt>> {
+    let line: Vec<Pt> = part
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?]))
+        .collect();
+    (line.len() >= 2).then_some(line)
+}
+
+/// Кольцо с повтором первой вершины в конце.
+fn closed(mut ring: Vec<Pt>) -> Vec<Pt> {
+    if let Some(&first) = ring.first()
+        && ring[ring.len() - 1] != first
+    {
+        ring.push(first);
+    }
+    ring
+}
+
 /// Кольца всех объектов, замкнутые повтором первой вершины: по ним
 /// считаются ограничители допуска.
 pub fn closed_rings(items: &[Item]) -> Vec<Vec<Pt>> {

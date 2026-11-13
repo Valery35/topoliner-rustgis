@@ -875,14 +875,22 @@ fn hint_lines(h: &Hint, lang: Lang) -> Vec<String> {
 }
 
 /// Число в записи `%g` языка Python: шесть значащих цифр без хвостовых нулей.
-fn g_format(v: f64) -> String {
+pub fn g_format(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
     }
     let exp = v.abs().log10().floor() as i32;
-    if !(-5..6).contains(&exp) {
+    if !(-4..6).contains(&exp) {
+        // Показатель пишется не меньше чем двумя цифрами, как в Python.
         let s = format!("{v:e}");
-        return s;
+        return match s.split_once('e') {
+            Some((m, e)) => {
+                let (sign, digits) = e.split_at(usize::from(e.starts_with('-')));
+                let sign = if sign.is_empty() { "+" } else { sign };
+                format!("{m}e{sign}{digits:0>2}")
+            }
+            None => s,
+        };
     }
     let places = (5 - exp).max(0) as usize;
     let text = format!("{v:.places$}");
@@ -904,5 +912,7 @@ mod tests {
         assert_eq!(g_format(10.0), "10");
         assert_eq!(g_format(0.5), "0.5");
         assert_eq!(g_format(1.0), "1");
+        assert_eq!(g_format(1e-6), "1e-06");
+        assert_eq!(g_format(0.0001), "0.0001");
     }
 }

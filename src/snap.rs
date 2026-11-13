@@ -19,13 +19,36 @@ use crate::rings::{EPS, Pt, point_segment};
 /// таким углом не встречается, а вычисляется оно неустойчиво.
 const PARALLEL_SIN: f64 = 1e-6;
 
-/// Событие вставки: точка, расстояние до ребра и номер кольца.
+/// Вид правки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Вершина притянута к лидеру кластера.
+    Move,
+    /// Узел вставлен в ребро по вершине соседа.
+    Insert,
+    /// Узел вставлен в точке пересечения рёбер.
+    Cross,
+}
+
+impl Kind {
+    /// Имя вида правки в поле `kind` слоя точек.
+    pub fn code(self) -> &'static str {
+        match self {
+            Kind::Move => "move",
+            Kind::Insert => "insert",
+            Kind::Cross => "cross",
+        }
+    }
+}
+
+/// Событие правки: точка, расстояние и номер кольца.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Insert {
     pub x: f64,
     pub y: f64,
     pub dist: f64,
     pub ring: usize,
+    pub kind: Kind,
 }
 
 /// Кольцо после нормализации: вершины без повтора первой и признак
@@ -285,6 +308,7 @@ fn apply(norm: &mut [Norm], pending: Pending, events: &mut Vec<Insert>) -> usize
                     y: py,
                     dist,
                     ring: ri,
+                    kind: Kind::Insert,
                 });
                 prev_t = t;
             }
@@ -349,15 +373,24 @@ fn segment(norm: &[Norm], ri: usize, si: usize) -> Option<(Pt, Pt)> {
 
 /// Кандидаты на вставку по вершинам: вершина лежит в пределах допуска
 /// от чужого ребра, но не совпадает с его концами.
-fn by_vertices(norm: &[Norm], tolerance: f64, project: bool) -> Pending {
+fn by_vertices(norm: &[Norm], tolerance: f64, project: bool, fixed: &[Vec<Pt>]) -> Pending {
     let (ox, oy) = origin_of(norm);
     let cell = tolerance.max(mean_segment_length(norm));
     let seg_grid = segments_of(norm, cell, ox, oy);
     let own = vertices_of(norm, tolerance.max(1e-9), ox, oy);
 
-    // Точки-кандидаты: все вершины колец без повторов по координатам.
+    // Точки-кандидаты: вершины эталона, затем вершины рабочих колец,
+    // без повторов по координатам.
     let mut pts: Vec<Pt> = Vec::new();
     let mut seen: HashMap<(u64, u64), ()> = HashMap::new();
+    for r in fixed {
+        let (coords, _) = norm_ring(r);
+        for p in coords {
+            if seen.insert(pt_key(p), ()).is_none() {
+                pts.push(p);
+            }
+        }
+    }
     for (coords, _) in norm {
         let Some(coords) = coords else { continue };
         for &p in coords {
@@ -493,6 +526,83 @@ fn by_crossings(norm: &[Norm], tolerance: f64, project: bool) -> Pending {
     pending
 }
 
+/// Сетка точек с поиском ближайшей в радиусе. Нужна слиянию вершин.
+struct PointGrid {
+    cell: f64,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl PointGrid {
+    fn new(cell: f64) -> Self {
+        Self {
+            cell: if cell > 0.0 { cell } else { 1.0 },
+            xs: Vec::new(),
+            ys: Vec::new(),
+            cells: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, p: Pt) {
+        let idx = self.xs.len();
+        self.xs.push(p[0]);
+        self.ys.push(p[1]);
+        let key = (
+            (p[0] / self.cell).floor() as i64,
+            (p[1] / self.cell).floor() as i64,
+        );
+        self.cells.entry(key).or_default().push(idx);
+    }
+
+    /// Ближайшая точка в радиусе и расстояние до неё.
+    fn nearest(&self, p: Pt, radius: f64) -> Option<(usize, f64)> {
+        let cx = (p[0] / self.cell).floor() as i64;
+        let cy = (p[1] / self.cell).floor() as i64;
+        let mut best: Option<usize> = None;
+        let mut best_d2 = radius * radius;
+        let span = ((radius / self.cell).ceil() as i64).max(1);
+        for i in cx - span..=cx + span {
+            for j in cy - span..=cy + span {
+                let Some(bucket) = self.cells.get(&(i, j)) else {
+                    continue;
+                };
+                for &idx in bucket {
+                    let dx = self.xs[idx] - p[0];
+                    let dy = self.ys[idx] - p[1];
+                    let d2 = dx * dx + dy * dy;
+                    if d2 <= best_d2 {
+                        best_d2 = d2;
+                        best = Some(idx);
+                    }
+                }
+            }
+        }
+        best.map(|idx| (idx, best_d2.sqrt()))
+    }
+}
+
+/// Что делает сшивка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Слияние вершин и вставка узлов.
+    Both,
+    /// Только вставка узлов.
+    Insert,
+    /// Только слияние вершин.
+    Merge,
+}
+
+impl Mode {
+    fn merges(self) -> bool {
+        matches!(self, Mode::Merge | Mode::Both)
+    }
+
+    fn inserts(self) -> bool {
+        matches!(self, Mode::Insert | Mode::Both)
+    }
+}
+
 /// Что делать со вставкой узлов.
 #[derive(Debug, Clone, Copy)]
 pub struct Nodes {
@@ -506,54 +616,193 @@ pub struct Nodes {
     pub project_onto_edge: bool,
 }
 
-/// Итог вставки узлов.
-pub struct Done {
-    /// Кольца с узлами, замкнутые повтором первой вершины. `None` -
-    /// кольцо выродилось.
-    pub rings: Vec<Option<Vec<Pt>>>,
-    /// Вставки по вершинам, в порядке модуля. Узлы пересечений сюда
-    /// не идут: проверке нужны только события вершин.
-    pub events: Vec<Insert>,
-    /// Сколько узлов вставлено всего.
-    pub inserted: usize,
+/// Настройки сшивки целиком.
+pub struct Settings {
+    pub nodes: Nodes,
+    pub mode: Mode,
+    /// Номера колец, которые нельзя изменять. Их вершины неподвижны
+    /// и служат опорой для соседей.
+    pub frozen: Vec<usize>,
+    /// Кольца эталона. Они не изменяются и дают вершины-лидеры.
+    pub fixed: Vec<Vec<Pt>>,
 }
 
-/// Вставка узлов в набор колец. `rings` - кольца, замкнутые повтором
-/// первой вершины в конце.
-pub fn insert_nodes(rings: &[Vec<Pt>], opts: Nodes) -> Done {
+impl Settings {
+    /// Только вставка узлов, без эталона и замороженных колец.
+    pub fn nodes_only(nodes: Nodes) -> Self {
+        Self {
+            nodes,
+            mode: Mode::Insert,
+            frozen: Vec::new(),
+            fixed: Vec::new(),
+        }
+    }
+}
+
+/// Счётчики сшивки, как их печатает диалог модуля.
+#[derive(Debug, Clone, Default)]
+pub struct Stats {
+    pub vertices_in: usize,
+    pub vertices_out: usize,
+    pub vertices_moved: usize,
+    pub max_move: f64,
+    pub mean_move: f64,
+    pub nodes_inserted: usize,
+    pub nodes_crossing: usize,
+    pub rings_degenerate: usize,
+    pub rings_frozen: usize,
+}
+
+/// Итог сшивки.
+pub struct Done {
+    /// Кольца, замкнутые повтором первой вершины. `None` - кольцо
+    /// выродилось.
+    pub rings: Vec<Option<Vec<Pt>>>,
+    /// События правок в порядке модуля: сначала слияния, потом узлы
+    /// в пересечениях рёбер, потом узлы по вершинам.
+    pub events: Vec<Insert>,
+    pub stats: Stats,
+}
+
+impl Done {
+    /// Сколько узлов вставлено всего.
+    pub fn inserted(&self) -> usize {
+        self.stats.nodes_inserted
+    }
+}
+
+/// Сшивка набора колец. `rings` - кольца, замкнутые повтором первой
+/// вершины в конце.
+pub fn clean(rings: &[Vec<Pt>], opts: &Settings) -> Done {
+    let tolerance = opts.nodes.tolerance;
     let mut done = Done {
         rings: rings.iter().map(|r| Some(r.clone())).collect(),
         events: Vec::new(),
-        inserted: 0,
+        stats: Stats::default(),
     };
-    if opts.tolerance <= 0.0 || rings.is_empty() {
+    if tolerance <= 0.0 || rings.is_empty() {
         return done;
     }
-    let mut norm = normalize(rings);
-    if opts.crossings {
-        let pending = by_crossings(&norm, opts.tolerance, opts.project_onto_edge);
-        let mut skip = Vec::new();
-        done.inserted += apply(&mut norm, pending, &mut skip);
-    }
-    let pending = by_vertices(&norm, opts.tolerance, opts.project_onto_edge);
-    done.inserted += apply(&mut norm, pending, &mut done.events);
+    let mut norm: Vec<Norm> = rings
+        .iter()
+        .map(|r| {
+            let (coords, closed) = norm_ring(r);
+            (Some(coords), closed)
+        })
+        .collect();
+    done.stats.vertices_in = norm
+        .iter()
+        .map(|(c, _)| c.as_ref().map_or(0, Vec::len))
+        .sum();
+    done.stats.rings_frozen = opts.frozen.len();
 
-    // Сборка: повторы снимаются ещё раз, кольцо замыкается.
+    // ── Шаг 1. Слияние вершин ───────────────────────────────────────────
+    if opts.mode.merges() {
+        let mut grid = PointGrid::new(tolerance);
+        // Эталон первым: его вершины гарантированно становятся лидерами.
+        for r in &opts.fixed {
+            let (coords, _) = norm_ring(r);
+            for p in coords {
+                if grid.nearest(p, tolerance).is_none() {
+                    grid.add(p);
+                }
+            }
+        }
+        // Неизменяемые кольца обходятся до остальных: их вершины
+        // становятся опорой, а сами они не двигаются.
+        for &ri in &opts.frozen {
+            if let Some(Some(coords)) = norm.get(ri).map(|(c, _)| c.clone()) {
+                for p in coords {
+                    grid.add(p);
+                }
+            }
+        }
+        let mut sum_move = 0.0;
+        for (ri, (coords, _closed)) in norm.iter_mut().enumerate() {
+            if opts.frozen.contains(&ri) {
+                continue;
+            }
+            let Some(coords) = coords else { continue };
+            for p in coords.iter_mut() {
+                match grid.nearest(*p, tolerance) {
+                    None => grid.add(*p),
+                    Some((idx, dist)) => {
+                        let leader = [grid.xs[idx], grid.ys[idx]];
+                        if dist > EPS {
+                            done.stats.vertices_moved += 1;
+                            sum_move += dist;
+                            done.stats.max_move = done.stats.max_move.max(dist);
+                            done.events.push(Insert {
+                                x: leader[0],
+                                y: leader[1],
+                                dist,
+                                ring: ri,
+                                kind: Kind::Move,
+                            });
+                        }
+                        *p = leader;
+                    }
+                }
+            }
+        }
+        if done.stats.vertices_moved > 0 {
+            done.stats.mean_move = sum_move / done.stats.vertices_moved as f64;
+        }
+    }
+
+    // ── Шаг 2. Чистка дублей и отбраковка вырожденных колец ─────────────
+    for (coords, closed) in norm.iter_mut() {
+        let Some(list) = coords else { continue };
+        let cleaned = drop_repeats(list, *closed);
+        if cleaned.len() < if *closed { 3 } else { 2 } {
+            done.stats.rings_degenerate += 1;
+            *coords = None;
+        } else {
+            *coords = Some(cleaned);
+        }
+    }
+
+    // ── Шаг 3. Узлы ─────────────────────────────────────────────────────
+    if opts.mode.inserts() {
+        if opts.nodes.crossings {
+            let pending = by_crossings(&norm, tolerance, opts.nodes.project_onto_edge);
+            let mut cross = Vec::new();
+            done.stats.nodes_crossing = apply(&mut norm, pending, &mut cross);
+            for e in &mut cross {
+                e.kind = Kind::Cross;
+            }
+            done.stats.nodes_inserted += done.stats.nodes_crossing;
+            done.events.append(&mut cross);
+        }
+        let pending = by_vertices(&norm, tolerance, opts.nodes.project_onto_edge, &opts.fixed);
+        let mut inserts = Vec::new();
+        done.stats.nodes_inserted += apply(&mut norm, pending, &mut inserts);
+        done.events.append(&mut inserts);
+    }
+
+    // ── Шаг 4. Сборка ───────────────────────────────────────────────────
     done.rings = norm
         .into_iter()
         .map(|(coords, closed)| {
             let coords = drop_repeats(&coords?, closed);
             if coords.len() < if closed { 3 } else { 2 } {
+                done.stats.rings_degenerate += 1;
                 return None;
             }
             let mut out = coords;
             if closed && let Some(&first) = out.first() {
                 out.push(first);
             }
+            done.stats.vertices_out += out.len();
             Some(out)
         })
         .collect();
     done
+}
+
+/// Вставка узлов без слияния вершин.
+pub fn insert_nodes(rings: &[Vec<Pt>], opts: Nodes) -> Done {
+    clean(rings, &Settings::nodes_only(opts))
 }
 
 /// События вставки узлов по вершинам, без изменения колец и без узлов
@@ -563,7 +812,7 @@ pub fn insert_events(rings: &[Vec<Pt>], tolerance: f64) -> Vec<Insert> {
         return Vec::new();
     }
     let mut norm = normalize(rings);
-    let pending = by_vertices(&norm, tolerance, false);
+    let pending = by_vertices(&norm, tolerance, false, &[]);
     let mut events = Vec::new();
     apply(&mut norm, pending, &mut events);
     events
@@ -610,7 +859,7 @@ mod tests {
                 project_onto_edge: true,
             },
         );
-        assert_eq!(done.inserted, 1);
+        assert_eq!(done.inserted(), 1);
         let got = done.rings[0].clone().unwrap_or_default();
         assert_eq!(got.len(), 6);
         assert!(got.contains(&[10.0, 5.0]), "{got:?}");
@@ -630,7 +879,7 @@ mod tests {
                 project_onto_edge: true,
             },
         );
-        assert_eq!(done.inserted, 0);
+        assert_eq!(done.inserted(), 0);
         assert_eq!(done.rings[0].clone().unwrap_or_default(), a);
         assert_eq!(done.rings[1].clone().unwrap_or_default(), b);
     }

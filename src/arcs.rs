@@ -59,8 +59,9 @@ pub fn insert_missing_nodes(rings: &[Vec<Pt>], eps: f64, max_passes: usize) -> V
                 project_onto_edge: true,
             },
         );
+        let added = done.inserted();
         current = done.rings.into_iter().map(Option::unwrap_or_default).collect();
-        if done.inserted == 0 {
+        if added == 0 {
             break;
         }
     }

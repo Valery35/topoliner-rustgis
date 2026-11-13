@@ -18,12 +18,18 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::{arcs, boundaries, coverage, values};
+use crate::{arcs, boundaries, clean, coverage, snap, values};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
     toolbox: "Topoliner",
-    offered: &["topologyaudit", "boundaries", "coverage"],
+    offered: &[
+        "topologyaudit",
+        "topologyclean",
+        "insertnodes",
+        "boundaries",
+        "coverage",
+    ],
     xy_tables: &[],
 };
 
@@ -51,6 +57,8 @@ impl Product for Topoliner {
             "topologyaudit" => topology_audit(values, lang),
             "boundaries" => boundaries_of(values, lang),
             "coverage" => coverage_of(values, lang),
+            "topologyclean" => topology_clean(values, lang),
+            "insertnodes" => insert_nodes(values, lang),
             other => Err(Failure::Run(other.to_string())),
         }
     }
@@ -200,6 +208,109 @@ fn boundaries_of(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let messages = boundaries::report(items.len(), &borders, lang);
     let out = json!({"OUTPUT": boundaries::borders_layer(&borders, field, &side, lang)});
     Ok((out, messages))
+}
+
+/// Слой входа для сшивки: объекты с частями, их атрибуты и поля.
+struct Layer {
+    items: Vec<arcs::Shape>,
+    attrs: Vec<J>,
+    fields: Vec<(String, String)>,
+    is_polygon: bool,
+}
+
+fn input_layer(values: &J, lang: Lang) -> Result<Layer, Failure> {
+    if !values["INPUT"].is_array() {
+        return Err(Failure::Values("INPUT".into()));
+    }
+    let info = &values["@INPUT"];
+    let is_polygon = info["geometry"] != "line";
+    let items = values::shapes_of(&values["INPUT"], is_polygon);
+    if items.is_empty() {
+        return Err(Failure::Run(match lang {
+            Lang::Ru => "Во входном слое нет пригодных геометрий.".into(),
+            Lang::En => "The input layer has no usable geometries.".into(),
+        }));
+    }
+    // Атрибуты идут в порядке объектов, как их отдал слой.
+    let mut attrs = Vec::new();
+    for f in values["INPUT"].as_array().into_iter().flatten() {
+        let fid = f["id"].as_i64();
+        if items.iter().any(|(id, _)| Some(*id) == fid) {
+            attrs.push(f["attrs"].clone());
+        }
+    }
+    let numeric: Vec<&str> = info["numeric"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(J::as_str)
+        .collect();
+    let fields: Vec<(String, String)> = info["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(J::as_str)
+        .map(|n| {
+            let kind = if numeric.contains(&n) { "double" } else { "string" };
+            (n.to_string(), kind.to_string())
+        })
+        .collect();
+    Ok(Layer {
+        items,
+        attrs,
+        fields,
+        is_polygon,
+    })
+}
+
+/// 1.05 Сшивка узлов и вершин.
+fn topology_clean(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    let tolerance = number(values, "TOLERANCE").unwrap_or(2.0);
+    if tolerance <= 0.0 {
+        return Err(Failure::Values("TOLERANCE".into()));
+    }
+    let mode = match values.get("MODE").and_then(J::as_u64).unwrap_or(0) {
+        1 => snap::Mode::Insert,
+        2 => snap::Mode::Merge,
+        _ => snap::Mode::Both,
+    };
+    let run = clean::CleanRun {
+        tolerance,
+        mode,
+        priority: values.get("PRIORITY").and_then(J::as_u64).unwrap_or(1) as usize,
+        crossings: flag(values, "CROSSINGS", true),
+        protect: flag(values, "PROTECT", true),
+        validate: flag(values, "VALIDATE", true),
+        report: flag(values, "REPORT", false),
+    };
+    Ok(clean::topology_clean(
+        &layer.items,
+        &layer.attrs,
+        &layer.fields,
+        layer.is_polygon,
+        &run,
+        lang,
+    ))
+}
+
+/// 1.06 Вставка недостающих узлов.
+fn insert_nodes(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    let run = clean::NodesRun {
+        eps: number(values, "EPS").unwrap_or(1e-6),
+        crossings: flag(values, "CROSSINGS", true),
+        max_passes: values.get("MAX_PASSES").and_then(J::as_u64).unwrap_or(10) as usize,
+        report: flag(values, "REPORT", false),
+    };
+    Ok(clean::insert_nodes(
+        &layer.items,
+        &layer.attrs,
+        &layer.fields,
+        layer.is_polygon,
+        &run,
+        lang,
+    ))
 }
 
 /// 2.03 Топологическая модель покрытия.

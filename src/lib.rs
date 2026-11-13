@@ -13,6 +13,7 @@
 //! - [`audit`] - 1.01 Проверка топологии полигонов;
 //! - [`boundaries`] - 2.02 Границы полигонов линиями;
 //! - [`coverage`] - 2.03 Топологическая модель покрытия;
+//! - [`clean`] - 1.05 Сшивка узлов и вершин, 1.06 Вставка узлов;
 //! - [`rings`], [`snap`], [`arcs`], [`backend`] - геометрия: кольца,
 //!   вставка узлов, разбор на дуги, булевы операции;
 //! - [`rounding`] - округление величин до значащих цифр;
@@ -25,6 +26,7 @@ pub mod arcs;
 pub mod audit;
 pub mod backend;
 pub mod boundaries;
+pub mod clean;
 pub mod coverage;
 pub mod manifest;
 pub mod product;

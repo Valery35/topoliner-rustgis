@@ -67,18 +67,36 @@ fn compute(r: &J, lang: Lang) -> (J, Vec<String>) {
         .unwrap_or_else(|e| unreachable!("{name}: {e:?}"))
 }
 
-/// Вершины геометрии объекта выхода: точка, линия или ничего.
-fn vertices(g: &J) -> Vec<Vec<f64>> {
-    let one = |p: &J| -> Vec<f64> {
+/// Вершины геометрии объекта выхода, по кольцам или частям.
+///
+/// Прогон модуля пишет полигон плоским списком колец в `parts`,
+/// расширение отдаёт его в `rings` или `polygons`, как просит крейт.
+/// Для сверки обе записи приводятся к списку колец.
+fn vertices(g: &J) -> Vec<Vec<Vec<f64>>> {
+    let point = |p: &J| -> Vec<f64> {
         (0..2)
             .map(|i| p.get(i).and_then(J::as_f64).unwrap_or(f64::NAN))
             .collect()
     };
-    if let Some(points) = g["points"].as_array() {
-        return points.iter().map(one).collect();
+    let line = |v: &J| -> Vec<Vec<f64>> {
+        v.as_array().into_iter().flatten().map(&point).collect()
+    };
+    for key in ["parts", "rings"] {
+        if let Some(list) = g[key].as_array() {
+            return list.iter().map(&line).collect();
+        }
+    }
+    if let Some(polys) = g["polygons"].as_array() {
+        return polys
+            .iter()
+            .flat_map(|p| p.as_array().into_iter().flatten().map(&line))
+            .collect();
+    }
+    if g.get("points").is_some() {
+        return vec![line(&g["points"])];
     }
     if g.get("xyz").is_some_and(|p| !p.is_null()) {
-        return vec![one(&g["xyz"])];
+        return vec![vec![point(&g["xyz"])]];
     }
     Vec::new()
 }
@@ -119,10 +137,13 @@ fn same_layer(case: &str, key: &str, got: &J, want: &J, lang: Lang) {
             }
         }
         let (a, b) = (vertices(&g["geometry"]), vertices(&w["geometry"]));
-        assert_eq!(a.len(), b.len(), "{case} {key} {k}: вершин");
-        for (p, q) in a.iter().zip(&b) {
-            for (x, y) in p.iter().zip(q) {
-                assert!((x - y).abs() < 1e-9, "{case} {key} {k}: {x} {y}");
+        assert_eq!(a.len(), b.len(), "{case} {key} {k}: колец {a:?} {b:?}");
+        for (ra, rb) in a.iter().zip(&b) {
+            assert_eq!(ra.len(), rb.len(), "{case} {key} {k}: вершин {ra:?} {rb:?}");
+            for (p, q) in ra.iter().zip(rb) {
+                for (x, y) in p.iter().zip(q) {
+                    assert!((x - y).abs() < 1e-9, "{case} {key} {k}: {x} {y}");
+                }
             }
         }
     }
@@ -180,6 +201,18 @@ fn boundaries_match_the_module() {
 #[test]
 fn coverage_matches_the_module() {
     runs_match_the_module("coverage");
+}
+
+/// 1.05 Сшивка узлов и вершин.
+#[test]
+fn topology_clean_matches_the_module() {
+    runs_match_the_module("topologyclean");
+}
+
+/// 1.06 Вставка недостающих узлов.
+#[test]
+fn insert_nodes_matches_the_module() {
+    runs_match_the_module("insertnodes");
 }
 
 /// Прогон 1.01 через RustGIS целиком: слой приходит в градусах WGS 84,
