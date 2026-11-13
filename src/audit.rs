@@ -810,27 +810,7 @@ pub fn report(
     );
     out.push(String::new());
     out.push(tr(lang, "── Топология ──", "-- Topology --"));
-    let summary = summarize(findings);
-    if summary.is_empty() {
-        out.push(tr(lang, "Нарушений не найдено.", "No violations found."));
-    } else {
-        out.push(format!(
-            "{:<40} {:>8} {:>8} {:>12} {:>12}",
-            "нарушение", "чинится", "решать", "медиана", "максимум"
-        ));
-        let mut order: Vec<&Slot> = summary.iter().collect();
-        order.sort_by_key(|s| std::cmp::Reverse(s.auto + s.review));
-        for slot in order {
-            out.push(format!(
-                "{:<40} {:>8} {:>8} {:>12.4} {:>12.4}",
-                slot.kind.label(),
-                slot.auto,
-                slot.review,
-                slot.value_med,
-                slot.value_max
-            ));
-        }
-    }
+    out.extend(summary_lines(findings, lang));
     if let Some(h) = hint {
         out.extend(hint_lines(h, lang));
     }
@@ -849,6 +829,32 @@ pub fn report(
         .replacen("%d", &auto.to_string(), 1)
         .replacen("%d", &(findings.len() - auto).to_string(), 1),
     );
+    out
+}
+
+/// Сводка по видам нарушений таблицей. Названия идут по-английски: так
+/// их печатает модуль у 1.01 и 1.03.
+pub fn summary_lines(findings: &[Finding], lang: Lang) -> Vec<String> {
+    let summary = summarize(findings);
+    if summary.is_empty() {
+        return vec![tr(lang, "Нарушений не найдено.", "No violations found.")];
+    }
+    let mut out = vec![format!(
+        "{:<40} {:>8} {:>8} {:>12} {:>12}",
+        "нарушение", "чинится", "решать", "медиана", "максимум"
+    )];
+    let mut order: Vec<&Slot> = summary.iter().collect();
+    order.sort_by_key(|s| std::cmp::Reverse(s.auto + s.review));
+    for slot in order {
+        out.push(format!(
+            "{:<40} {:>8} {:>8} {:>12.4} {:>12.4}",
+            slot.kind.label(),
+            slot.auto,
+            slot.review,
+            slot.value_med,
+            slot.value_max
+        ));
+    }
     out
 }
 

@@ -15,6 +15,7 @@
 //! от GEOS отличаются.
 
 use geo::algorithm::validation::{InvalidPolygon, RingRole, Validation};
+use geo::algorithm::repair_polygon::MakeValid;
 use geo::{
     Area, BooleanOps, BoundingRect, Contains, Coord, InteriorPoint, LineString, MultiPolygon,
     Polygon, Relate, unary_union,
@@ -175,6 +176,29 @@ pub fn intersection(a: &Geom, b: &Geom) -> Geom {
     snapped(a.intersection(b), extent_of(&[a, b]))
 }
 
+pub fn difference(a: &Geom, b: &Geom) -> Geom {
+    snapped(a.difference(b), extent_of(&[a, b]))
+}
+
+/// Исправление некорректной геометрии, как `makeValid` в QGIS. Крейт
+/// `geo` правит полигон триангуляцией, GEOS строит объединение колец,
+/// и на сложных случаях их итоги различаются.
+pub fn make_valid(g: &Geom) -> Geom {
+    let mut out: Vec<Polygon<f64>> = Vec::new();
+    for p in &g.0 {
+        if p.is_valid() {
+            out.push(p.clone());
+            continue;
+        }
+        match p.make_valid() {
+            Ok(fixed) => out.extend(fixed.0),
+            // Исправить не удалось, объект остаётся как был.
+            Err(_) => out.push(p.clone()),
+        }
+    }
+    MultiPolygon::new(out)
+}
+
 pub fn union_all(geoms: &[Geom]) -> Geom {
     let live: Vec<&Geom> = geoms.iter().filter(|g| !is_empty(g)).collect();
     if live.is_empty() {
@@ -182,6 +206,38 @@ pub fn union_all(geoms: &[Geom]) -> Geom {
     }
     let extent = extent_of(&live);
     snapped(unary_union(live), extent)
+}
+
+/// Длина общей границы двух геометрий.
+///
+/// GEOS считает её пересечением двух границ, у крейта `geo` пересечения
+/// линий нет. Здесь берутся рёбра первой геометрии, середина которых
+/// лежит на границе второй, и складываются их длины. Для выбора соседа
+/// с наибольшей общей границей этого достаточно.
+pub fn shared_boundary(a: &Geom, b: &Geom) -> f64 {
+    let mut edges: Vec<(Pt, Pt)> = Vec::new();
+    for p in &b.0 {
+        for ls in std::iter::once(p.exterior()).chain(p.interiors()) {
+            for w in ls.0.windows(2) {
+                edges.push(([w[0].x, w[0].y], [w[1].x, w[1].y]));
+            }
+        }
+    }
+    let mut total = 0.0;
+    for p in &a.0 {
+        for ls in std::iter::once(p.exterior()).chain(p.interiors()) {
+            for w in ls.0.windows(2) {
+                let mid = [0.5 * (w[0].x + w[1].x), 0.5 * (w[0].y + w[1].y)];
+                let on = edges.iter().any(|&(c, d)| {
+                    crate::rings::point_segment(mid, c, d).0 <= 1e-9
+                });
+                if on {
+                    total += (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
+                }
+            }
+        }
+    }
+    total
 }
 
 pub fn intersects(a: &Geom, b: &Geom) -> bool {

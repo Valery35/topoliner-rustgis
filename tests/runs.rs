@@ -101,6 +101,38 @@ fn vertices(g: &J) -> Vec<Vec<Vec<f64>>> {
     Vec::new()
 }
 
+/// Совпадают ли две вершины.
+fn same_point(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
+}
+
+/// Совпадают ли два кольца или две линии.
+///
+/// Замкнутое кольцо сравнивается как цикл: начальная вершина и обход
+/// у GEOS и у крейта `geo` свои, а кольцо при этом то же самое. Линия
+/// сравнивается вершина в вершину.
+fn same_ring(a: &[Vec<f64>], b: &[Vec<f64>]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let closed = |r: &[Vec<f64>]| r.len() > 2 && same_point(&r[0], &r[r.len() - 1]);
+    if !closed(a) || !closed(b) {
+        return a.iter().zip(b).all(|(p, q)| same_point(p, q));
+    }
+    let body = |r: &[Vec<f64>]| r[..r.len() - 1].to_vec();
+    let (ra, rb) = (body(a), body(b));
+    let n = ra.len();
+    let back: Vec<Vec<f64>> = rb.iter().rev().cloned().collect();
+    for side in [&rb, &back] {
+        for shift in 0..n {
+            if (0..n).all(|i| same_point(&ra[i], &side[(i + shift) % n])) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Один выход против образца: количество объектов, значения полей
 /// по порядку и вершины геометрии.
 fn same_layer(case: &str, key: &str, got: &J, want: &J, lang: Lang) {
@@ -139,12 +171,7 @@ fn same_layer(case: &str, key: &str, got: &J, want: &J, lang: Lang) {
         let (a, b) = (vertices(&g["geometry"]), vertices(&w["geometry"]));
         assert_eq!(a.len(), b.len(), "{case} {key} {k}: колец {a:?} {b:?}");
         for (ra, rb) in a.iter().zip(&b) {
-            assert_eq!(ra.len(), rb.len(), "{case} {key} {k}: вершин {ra:?} {rb:?}");
-            for (p, q) in ra.iter().zip(rb) {
-                for (x, y) in p.iter().zip(q) {
-                    assert!((x - y).abs() < 1e-9, "{case} {key} {k}: {x} {y}");
-                }
-            }
+            assert!(same_ring(ra, rb), "{case} {key} {k}: {ra:?} {rb:?}");
         }
     }
 }
@@ -195,6 +222,18 @@ fn topology_audit_matches_the_module() {
 #[test]
 fn line_audit_matches_the_module() {
     runs_match_the_module("lineaudit");
+}
+
+/// 1.03 Очистка топологии полигонов.
+#[test]
+fn topology_fix_matches_the_module() {
+    runs_match_the_module("topologyfix");
+}
+
+/// 1.04 Очистка топологии линий.
+#[test]
+fn line_fix_matches_the_module() {
+    runs_match_the_module("linefix");
 }
 
 /// 2.02 Границы полигонов линиями.
@@ -296,7 +335,7 @@ fn topology_audit_through_rustgis() {
 fn manifest_tools_follow_tools_json() {
     let path = root().join("plugin.json");
     let cat = catalog();
-    let (tools, ru) = rustgis_kit::manifest::tools_section(&cat, &OPTIONS);
+    let (tools, ru) = topoliner_rustgis::manifest::tools_section(&cat);
     if std::env::var_os("TOPOLINER_MANIFEST").is_some() {
         let text = std::fs::read_to_string(&path).expect("plugin.json");
         let text = rustgis_kit::manifest::splice(&text, &tools, &ru).expect("splice");
@@ -333,4 +372,15 @@ fn manifest_tools_follow_tools_json() {
     }
     // манифест описывает ровно те инструменты, что предлагает продукт
     assert_eq!(tools.len(), OPTIONS.offered.len());
+    // скрытых полей в окне нет
+    for t in &tools {
+        for p in t["params"].as_array().expect("params") {
+            assert!(
+                !topoliner_rustgis::manifest::HIDDEN.contains(&p["name"].as_str().unwrap_or("")),
+                "{}: {}",
+                t["id"],
+                p["name"]
+            );
+        }
+    }
 }

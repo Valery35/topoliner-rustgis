@@ -35,6 +35,7 @@ pub mod product;
 pub mod rings;
 pub mod rounding;
 pub mod snap;
+pub mod topo_fix;
 pub mod values;
 
 /// Описания инструментов, выгрузка модуля (`tools/export_tools.py`).

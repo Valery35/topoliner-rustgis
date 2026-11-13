@@ -18,7 +18,7 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::{arcs, boundaries, clean, coverage, line_checks, snap, values};
+use crate::{arcs, boundaries, clean, coverage, line_checks, snap, topo_fix, values};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
@@ -26,6 +26,8 @@ pub const OPTIONS: Options = Options {
     offered: &[
         "topologyaudit",
         "lineaudit",
+        "topologyfix",
+        "linefix",
         "topologyclean",
         "insertnodes",
         "boundaries",
@@ -57,6 +59,8 @@ impl Product for Topoliner {
         match tool.name.as_str() {
             "topologyaudit" => topology_audit(values, lang),
             "lineaudit" => line_audit(values, lang),
+            "topologyfix" => topology_fix(values, lang),
+            "linefix" => line_fix(values, lang),
             "boundaries" => boundaries_of(values, lang),
             "coverage" => coverage_of(values, lang),
             "topologyclean" => topology_clean(values, lang),
@@ -246,6 +250,101 @@ fn line_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let messages = line_checks::report(items.len(), &s, &findings, lang);
     let out = json!({"OUTPUT": line_checks::findings_layer(&findings, lang)});
     Ok((out, messages))
+}
+
+/// 1.03 Очистка топологии полигонов.
+fn topology_fix(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    let s = topo_fix::FixSettings {
+        tolerance: number(values, "TOLERANCE").unwrap_or(2.0),
+        area_threshold: number(values, "AREA").unwrap_or(1.0),
+        snap: flag(values, "DO_SNAP", true),
+        fix_invalid: flag(values, "DO_VALID", true),
+        resolve_overlaps: flag(values, "DO_OVERLAPS", true),
+        fill_gaps: flag(values, "DO_GAPS", true),
+        drop_tiny_features: flag(values, "DROP_TINY", false),
+        protect_narrow: true,
+        spike_angle: number(values, "SPIKE").unwrap_or(1.0),
+        cavity_area: number(values, "CAVITY").unwrap_or(0.0),
+        winner: match values.get("WINNER").and_then(J::as_u64).unwrap_or(0) {
+            1 => topo_fix::Winner::First,
+            _ => topo_fix::Winner::Larger,
+        },
+        max_area_loss: 0.25,
+    };
+    let done = topo_fix::fix_items(&layer.items, &s);
+    let written = done.shapes.iter().filter(|p| !p.is_empty()).count();
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "OUTPUT".into(),
+        clean::shapes_layer(&layer.items, &layer.attrs, &layer.fields, &done.shapes, true),
+    );
+    if flag(values, "REMAINS", false) {
+        out.insert("REMAINS".into(), audit::findings_layer(&done.left, lang));
+    }
+    let messages = topo_fix::report(layer.items.len(), written, &done, &s, lang);
+    Ok((J::Object(out), messages))
+}
+
+/// 1.04 Очистка топологии линий.
+fn line_fix(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    // Мультилиния разбирается на части, у каждой свой номер объекта.
+    let mut items: Vec<(i64, Vec<crate::rings::Pt>)> = Vec::new();
+    let mut parts_of: Vec<Vec<usize>> = Vec::new();
+    for (fid, parts) in &layer.items {
+        let mut indices = Vec::new();
+        for part in parts {
+            if let Some(line) = part.first() {
+                indices.push(items.len());
+                items.push((*fid, line.clone()));
+            }
+        }
+        parts_of.push(indices);
+    }
+    let s = line_checks::FixSettings {
+        tolerance: number(values, "TOLERANCE").unwrap_or(2.0),
+        min_length: number(values, "MIN_LENGTH").unwrap_or(0.0),
+        trim_overshoots: flag(values, "DO_TRIM", true),
+        close_undershoots: flag(values, "DO_CLOSE", true),
+        snap: flag(values, "DO_SNAP", true),
+        drop_short: flag(values, "DROP_SHORT", false),
+        spike_angle: number(values, "SPIKE").unwrap_or(1.0),
+    };
+    let done = line_checks::fix_lines(&items, &s);
+    // Объект собирается обратно из своих частей.
+    let shapes: Vec<arcs::Parts> = parts_of
+        .iter()
+        .map(|indices| {
+            indices
+                .iter()
+                .filter_map(|&k| done.lines.get(k).cloned().flatten())
+                .map(|line| vec![line])
+                .collect()
+        })
+        .collect();
+    let written = shapes.iter().filter(|s| !s.is_empty()).count();
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "OUTPUT".into(),
+        clean::shapes_layer(&layer.items, &layer.attrs, &layer.fields, &shapes, false),
+    );
+    if flag(values, "REMAINS", false) {
+        out.insert(
+            "REMAINS".into(),
+            line_checks::findings_layer(&done.left, lang),
+        );
+    }
+    let mut messages = vec![
+        match lang {
+            Lang::Ru => "Линий: %d, допуск %g".to_string(),
+            Lang::En => "Lines: %d, tolerance %g".to_string(),
+        }
+        .replacen("%d", &items.len().to_string(), 1)
+        .replacen("%g", &audit::g_format(s.tolerance), 1),
+    ];
+    messages.extend(line_checks::fix_report(layer.items.len(), written, &done, lang));
+    Ok((J::Object(out), messages))
 }
 
 /// Слой входа для сшивки: объекты с частями, их атрибуты и поля.

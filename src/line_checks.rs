@@ -578,6 +578,365 @@ pub fn report(items: usize, s: &Settings, findings: &[Finding], lang: Lang) -> V
     out
 }
 
+/// Настройки очистки линий.
+pub struct FixSettings {
+    pub tolerance: f64,
+    pub min_length: f64,
+    pub trim_overshoots: bool,
+    pub close_undershoots: bool,
+    pub snap: bool,
+    pub drop_short: bool,
+    pub spike_angle: f64,
+}
+
+/// Счётчики очистки линий.
+#[derive(Default)]
+pub struct FixStats {
+    pub dup_vertices: usize,
+    pub spikes: usize,
+    pub vertices_moved: usize,
+    pub nodes_inserted: usize,
+    pub overshoots_trimmed: usize,
+    pub undershoots_closed: usize,
+    pub zero_dropped: usize,
+    pub short_dropped: usize,
+    pub max_move: f64,
+    pub length_before: f64,
+    pub length_after: f64,
+}
+
+/// Итог очистки линий.
+pub struct Fixed {
+    /// Линии по объектам входа, `None` - линия удалена.
+    pub lines: Vec<Option<Vec<Pt>>>,
+    pub stats: FixStats,
+    pub left: Vec<Finding>,
+}
+
+/// Обрезает хвост линии до ближайшего пересечения с чужой линией.
+fn trim_tail(
+    lines: &[Vec<Pt>],
+    index: &Grid,
+    i: usize,
+    side: usize,
+    tolerance: f64,
+) -> Option<Vec<Pt>> {
+    let work: Vec<Pt> = if side == 1 {
+        lines[i].clone()
+    } else {
+        lines[i].iter().rev().copied().collect()
+    };
+    let mut walked = 0.0;
+    for k in (1..work.len()).rev() {
+        let (a, b) = (work[k], work[k - 1]);
+        let seg_len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let mut best: Option<(Pt, f64)> = None;
+        for j in index.near(a, tolerance + seg_len) {
+            if j == i {
+                continue;
+            }
+            for w in lines[j].windows(2) {
+                let Some(hit) = segment_intersection((a, b), (w[0], w[1])) else {
+                    continue;
+                };
+                let d = (hit[0] - a[0]).hypot(hit[1] - a[1]);
+                if best.is_none_or(|(_p, bd)| d < bd) {
+                    best = Some((hit, d));
+                }
+            }
+        }
+        if let Some((hit, _d)) = best {
+            let mut cut: Vec<Pt> = work[..k].to_vec();
+            cut.push(hit);
+            if side == 0 {
+                cut.reverse();
+            }
+            return Some(cut);
+        }
+        walked += seg_len;
+        if walked > tolerance {
+            return None;
+        }
+    }
+    None
+}
+
+/// Ближайшая точка на чужой линии в пределах допуска.
+fn nearest_point_on_lines(
+    p: Pt,
+    lines: &[Vec<Pt>],
+    index: &Grid,
+    skip: usize,
+    tolerance: f64,
+) -> Option<Pt> {
+    let mut best: Option<Pt> = None;
+    let mut best_d = tolerance;
+    for j in index.near(p, tolerance) {
+        if j == skip {
+            continue;
+        }
+        for w in lines[j].windows(2) {
+            let (d, t) = point_segment(p, w[0], w[1]);
+            if d <= best_d {
+                best_d = d;
+                best = Some([
+                    w[0][0] + t * (w[1][0] - w[0][0]),
+                    w[0][1] + t * (w[1][1] - w[0][1]),
+                ]);
+            }
+        }
+    }
+    best
+}
+
+/// Индекс линий и количество концов в каждой точке.
+fn index_and_ends(lines: &[Vec<Pt>], cell: f64) -> (Grid, HashMap<(i64, i64), usize>) {
+    let mut index = Grid::new(cell);
+    for (i, coords) in lines.iter().enumerate() {
+        if coords.len() >= 2 {
+            index.add(i, coords);
+        }
+    }
+    let mut ends: HashMap<(i64, i64), usize> = HashMap::new();
+    for coords in lines.iter().filter(|c| c.len() >= 2) {
+        for p in [coords[0], coords[coords.len() - 1]] {
+            *ends.entry(key_of(p)).or_insert(0) += 1;
+        }
+    }
+    (index, ends)
+}
+
+/// 1.04 Очистка топологии линий. Перенос `line_checks.fix_lines`.
+pub fn fix_lines(items: &[(i64, Vec<Pt>)], s: &FixSettings) -> Fixed {
+    let fids: Vec<i64> = items.iter().map(|(f, _)| *f).collect();
+    let mut lines: Vec<Vec<Pt>> = items.iter().map(|(_, c)| c.clone()).collect();
+    let mut stats = FixStats {
+        length_before: lines.iter().filter(|c| c.len() >= 2).map(|c| length_of(c)).sum(),
+        ..FixStats::default()
+    };
+    let mut left: Vec<Finding> = Vec::new();
+
+    // ── Шаг 1. Артефакты вершин ─────────────────────────────────────────
+    for coords in lines.iter_mut() {
+        if coords.len() < 2 {
+            continue;
+        }
+        let (out, dups) = rings::drop_repeated_vertices(coords, false, EPS);
+        stats.dup_vertices += dups;
+        let (out, spikes) = rings::remove_spikes(&out, false, s.spike_angle);
+        stats.spikes += spikes;
+        *coords = out;
+    }
+
+    // ── Шаг 2. Обрезка перелётов ────────────────────────────────────────
+    let cell = (s.tolerance * 4.0).max(1e-6);
+    if s.trim_overshoots {
+        let (index, ends) = index_and_ends(&lines, cell);
+        for i in 0..lines.len() {
+            if lines[i].len() < 2 {
+                continue;
+            }
+            for side in [1usize, 0] {
+                let coords = &lines[i];
+                let point = if side == 1 {
+                    coords[coords.len() - 1]
+                } else {
+                    coords[0]
+                };
+                if ends.get(&key_of(point)).copied().unwrap_or(0) > 1 {
+                    continue;
+                }
+                let Some(tail) = overshoot_length(&lines, &index, i, side, s.tolerance) else {
+                    continue;
+                };
+                if tail > s.tolerance {
+                    continue;
+                }
+                if let Some(trimmed) = trim_tail(&lines, &index, i, side, s.tolerance)
+                    && trimmed.len() >= 2
+                {
+                    lines[i] = trimmed;
+                    stats.overshoots_trimmed += 1;
+                }
+            }
+        }
+    }
+
+    // ── Шаг 2а. Дотягивание недоводов ───────────────────────────────────
+    // Вставка узлов вершины не двигает, поэтому недовод она не закрывает:
+    // конец надо перенести на проекцию, на соседнюю линию.
+    if s.close_undershoots {
+        let (index, ends) = index_and_ends(&lines, cell);
+        for i in 0..lines.len() {
+            if lines[i].len() < 2 {
+                continue;
+            }
+            for side in [0usize, 1] {
+                let coords = &lines[i];
+                let point = if side == 0 {
+                    coords[0]
+                } else {
+                    coords[coords.len() - 1]
+                };
+                if ends.get(&key_of(point)).copied().unwrap_or(0) > 1 {
+                    continue;
+                }
+                let Some(target) = nearest_point_on_lines(point, &lines, &index, i, s.tolerance)
+                else {
+                    continue;
+                };
+                let shift = (target[0] - point[0]).hypot(target[1] - point[1]);
+                if shift <= EPS {
+                    continue;
+                }
+                let at = if side == 0 { 0 } else { lines[i].len() - 1 };
+                lines[i][at] = target;
+                stats.undershoots_closed += 1;
+                stats.max_move = stats.max_move.max(shift);
+                stats.vertices_moved += 1;
+            }
+        }
+    }
+
+    // ── Шаг 3. Вставка узлов ────────────────────────────────────────────
+    if s.snap {
+        let usable: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].len() >= 2).collect();
+        if !usable.is_empty() {
+            let work: Vec<Vec<Pt>> = usable.iter().map(|&i| lines[i].clone()).collect();
+            let done = crate::snap::insert_nodes(
+                &work,
+                crate::snap::Nodes {
+                    tolerance: s.tolerance,
+                    crossings: true,
+                    project_onto_edge: true,
+                },
+            );
+            stats.nodes_inserted = done.stats.nodes_inserted;
+            for (pos, &i) in usable.iter().enumerate() {
+                if let Some(Some(line)) = done.rings.get(pos) {
+                    lines[i] = line.clone();
+                }
+            }
+        }
+    }
+
+    // ── Шаг 4. Итог ─────────────────────────────────────────────────────
+    let mut out: Vec<Option<Vec<Pt>>> = Vec::with_capacity(lines.len());
+    for (i, coords) in lines.iter().enumerate() {
+        let length = if coords.len() >= 2 {
+            length_of(coords)
+        } else {
+            0.0
+        };
+        // Линия нулевой длины удаляется всегда, как в модуле.
+        if coords.len() < 2 || length <= EPS {
+            stats.zero_dropped += 1;
+            out.push(None);
+            continue;
+        }
+        if s.min_length > 0.0 && length < s.min_length {
+            if s.drop_short {
+                stats.short_dropped += 1;
+                out.push(None);
+                continue;
+            }
+            left.push(
+                Finding::new(
+                    Kind::ShortLine,
+                    SEVERITY_REVIEW,
+                    Text::of(
+                        "линия короче порога, удаление не выполнялось",
+                        "the line is shorter than the threshold, no deletion was performed",
+                    ),
+                )
+                .of(fids[i])
+                .value(length)
+                .at(coords.first().copied()),
+            );
+        }
+        stats.length_after += length;
+        out.push(Some(coords.clone()));
+    }
+    Fixed {
+        lines: out,
+        stats,
+        left,
+    }
+}
+
+/// Строки журнала очистки линий.
+pub fn fix_report(items: usize, written: usize, f: &Fixed, lang: Lang) -> Vec<String> {
+    let pick = |ru: &str, en: &str| match lang {
+        Lang::Ru => ru.to_string(),
+        Lang::En => en.to_string(),
+    };
+    let s = &f.stats;
+    let one = |ru: &str, en: &str, n: usize| pick(ru, en).replacen("%d", &n.to_string(), 1);
+    let mut out = vec![
+        String::new(),
+        pick("── Исправлено молча ──", "-- Fixed silently --"),
+        one(
+            "Повторяющихся вершин снято:  %d",
+            "Repeated vertices removed:   %d",
+            s.dup_vertices,
+        ),
+        one("Игл снято:                   %d", "Spikes removed:              %d", s.spikes),
+        one(
+            "Перелётов обрезано:          %d",
+            "Overshoots trimmed:          %d",
+            s.overshoots_trimmed,
+        ),
+        pick(
+            "Недоводов закрыто:           %d (макс. смещение %s)",
+            "Undershoots closed:          %d (max shift %s)",
+        )
+        .replacen("%d", &s.undershoots_closed.to_string(), 1)
+        .replacen("%s", &fmt(s.max_move), 1),
+        one(
+            "Узлов вставлено:             %d",
+            "Nodes inserted:              %d",
+            s.nodes_inserted,
+        ),
+    ];
+    if s.zero_dropped > 0 {
+        out.push(one(
+            "Линий нулевой длины удалено: %d",
+            "Zero length lines removed:   %d",
+            s.zero_dropped,
+        ));
+    }
+    if s.short_dropped > 0 {
+        out.push(one(
+            "Коротких линий удалено:      %d",
+            "Short lines removed:         %d",
+            s.short_dropped,
+        ));
+    }
+    let (before, after) = (s.length_before, s.length_after);
+    let rel = if before != 0.0 {
+        100.0 * (after - before) / before
+    } else {
+        0.0
+    };
+    out.push(String::new());
+    out.push(
+        pick(
+            "Длина до/после: %s / %s (%+.3f %%)",
+            "Length before/after: %s / %s (%+.3f %%)",
+        )
+        .replacen("%s", &fmt(before), 1)
+        .replacen("%s", &fmt(after), 1)
+        .replace("%+.3f", &format!("{rel:+.3}"))
+        .replace("%%", "%"),
+    );
+    out.push(
+        pick("Объектов на входе/выходе: %d / %d", "Objects in/out: %d / %d")
+            .replacen("%d", &items.to_string(), 1)
+            .replacen("%d", &written.to_string(), 1),
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

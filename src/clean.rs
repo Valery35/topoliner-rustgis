@@ -75,7 +75,20 @@ pub fn geometry_of(parts: &[Vec<Pt>], is_polygon: bool) -> J {
             _ => json!({"parts": parts.iter().map(points).collect::<Vec<J>>()}),
         };
     }
-    json!({"rings": parts.iter().map(points).collect::<Vec<J>>()})
+    // Кольцо замыкается повтором первой вершины, как его отдаёт модуль.
+    let closed: Vec<Vec<Pt>> = parts
+        .iter()
+        .map(|ring| {
+            let mut r = ring.clone();
+            if let Some(&first) = r.first()
+                && r[r.len() - 1] != first
+            {
+                r.push(first);
+            }
+            r
+        })
+        .collect();
+    json!({"rings": closed.iter().map(points).collect::<Vec<J>>()})
 }
 
 /// Геометрия объекта из его частей: один полигон кольцами, несколько -
