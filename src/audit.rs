@@ -33,7 +33,7 @@ pub struct Text {
 }
 
 impl Text {
-    fn of(ru: &str, en: &str) -> Self {
+    pub fn of(ru: &str, en: &str) -> Self {
         Self {
             ru: ru.to_string(),
             en: en.to_string(),
@@ -66,6 +66,14 @@ pub enum Kind {
     Duplicate,
     Nested,
     Lost,
+    // Нарушения, свойственные линиям.
+    Dangle,
+    Undershoot,
+    Overshoot,
+    PseudoNode,
+    Crossing,
+    ZeroLength,
+    ShortLine,
 }
 
 impl Kind {
@@ -86,6 +94,41 @@ impl Kind {
             Kind::Duplicate => "duplicate",
             Kind::Nested => "nested",
             Kind::Lost => "lost",
+            Kind::Dangle => "dangle",
+            Kind::Undershoot => "undershoot",
+            Kind::Overshoot => "overshoot",
+            Kind::PseudoNode => "pseudo_node",
+            Kind::Crossing => "crossing",
+            Kind::ZeroLength => "zero_length",
+            Kind::ShortLine => "short_line",
+        }
+    }
+
+    /// Название нарушения по-русски. Его печатает сводка 1.02.
+    pub fn label_ru(self) -> &'static str {
+        match self {
+            Kind::Invalid => "некорректная геометрия",
+            Kind::SelfTouch => "самокасание кольца",
+            Kind::DupVertex => "повторяющиеся вершины",
+            Kind::Spike => "игла",
+            Kind::Unsnapped => "вершина рядом с ребром соседа",
+            Kind::OnEdge => "вершина лежит на ребре соседа без узла",
+            Kind::TinyHole => "микродыра",
+            Kind::TinyPart => "микрочасть",
+            Kind::TinyFeature => "микрообъект",
+            Kind::Sliver => "волосяной полигон",
+            Kind::Overlap => "перекрытие",
+            Kind::Gap => "щель в покрытии",
+            Kind::Duplicate => "дубликат объекта",
+            Kind::Nested => "объект внутри другого",
+            Kind::Lost => "объект потерян при исправлении",
+            Kind::Dangle => "висячий конец",
+            Kind::Undershoot => "недовод до соседней линии",
+            Kind::Overshoot => "перелёт за узел",
+            Kind::PseudoNode => "псевдоузел",
+            Kind::Crossing => "пересечение без узла",
+            Kind::ZeroLength => "линия нулевой длины",
+            Kind::ShortLine => "линия короче порога",
         }
     }
 
@@ -108,6 +151,14 @@ impl Kind {
             Kind::Duplicate => "duplicate object",
             Kind::Nested => "object inside another",
             Kind::Lost => "object lost during repair",
+            // У линейных нарушений названия нет, и модуль печатает код.
+            Kind::Dangle
+            | Kind::Undershoot
+            | Kind::Overshoot
+            | Kind::PseudoNode
+            | Kind::Crossing
+            | Kind::ZeroLength
+            | Kind::ShortLine => self.code(),
         }
     }
 }
@@ -126,7 +177,7 @@ pub struct Finding {
 }
 
 impl Finding {
-    fn new(kind: Kind, severity: &'static str, note: Text) -> Self {
+    pub fn new(kind: Kind, severity: &'static str, note: Text) -> Self {
         Self {
             kind,
             severity,
@@ -139,23 +190,23 @@ impl Finding {
         }
     }
 
-    fn at(mut self, xy: Option<Pt>) -> Self {
+    pub fn at(mut self, xy: Option<Pt>) -> Self {
         self.xy = xy;
         self
     }
 
-    fn of(mut self, fid: i64) -> Self {
+    pub fn of(mut self, fid: i64) -> Self {
         self.fid = Some(fid);
         self
     }
 
-    fn pair(mut self, a: i64, b: i64) -> Self {
+    pub fn pair(mut self, a: i64, b: i64) -> Self {
         self.fid = Some(a);
         self.fid_b = Some(b);
         self
     }
 
-    fn value(mut self, v: f64) -> Self {
+    pub fn value(mut self, v: f64) -> Self {
         self.value = v;
         self
     }

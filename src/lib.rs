@@ -11,6 +11,7 @@
 //!
 //! - [`product`] - трейт `Product`: каталог, настройки, расчёт, команды;
 //! - [`audit`] - 1.01 Проверка топологии полигонов;
+//! - [`line_checks`] - 1.02 Проверка топологии линий;
 //! - [`boundaries`] - 2.02 Границы полигонов линиями;
 //! - [`coverage`] - 2.03 Топологическая модель покрытия;
 //! - [`clean`] - 1.05 Сшивка узлов и вершин, 1.06 Вставка узлов;
@@ -28,6 +29,7 @@ pub mod backend;
 pub mod boundaries;
 pub mod clean;
 pub mod coverage;
+pub mod line_checks;
 pub mod manifest;
 pub mod product;
 pub mod rings;

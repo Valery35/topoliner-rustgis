@@ -18,13 +18,14 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::{arcs, boundaries, clean, coverage, snap, values};
+use crate::{arcs, boundaries, clean, coverage, line_checks, snap, values};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
     toolbox: "Topoliner",
     offered: &[
         "topologyaudit",
+        "lineaudit",
         "topologyclean",
         "insertnodes",
         "boundaries",
@@ -55,6 +56,7 @@ impl Product for Topoliner {
     fn compute(&self, tool: &Tool, values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
         match tool.name.as_str() {
             "topologyaudit" => topology_audit(values, lang),
+            "lineaudit" => line_audit(values, lang),
             "boundaries" => boundaries_of(values, lang),
             "coverage" => coverage_of(values, lang),
             "topologyclean" => topology_clean(values, lang),
@@ -207,6 +209,42 @@ fn boundaries_of(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let borders = boundaries::extract_boundaries(&items, grid, node_eps);
     let messages = boundaries::report(items.len(), &borders, lang);
     let out = json!({"OUTPUT": boundaries::borders_layer(&borders, field, &side, lang)});
+    Ok((out, messages))
+}
+
+/// 1.02 Проверка топологии линий.
+fn line_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    if !values["INPUT"].is_array() {
+        return Err(Failure::Values("INPUT".into()));
+    }
+    // Мультилиния разбирается на части, у каждой свой номер объекта.
+    let mut items: Vec<(i64, Vec<crate::rings::Pt>)> = Vec::new();
+    for (i, f) in values["INPUT"].as_array().into_iter().flatten().enumerate() {
+        let fid = f["id"].as_i64().unwrap_or(i as i64);
+        for (_fid, parts) in values::shapes_of(&json!([f]), false) {
+            for part in parts {
+                if let Some(line) = part.into_iter().next() {
+                    items.push((fid, line));
+                }
+            }
+        }
+    }
+    if items.is_empty() {
+        return Err(Failure::Run(match lang {
+            Lang::Ru => "Во входном слое нет линий.".into(),
+            Lang::En => "The input layer has no lines.".into(),
+        }));
+    }
+    let s = line_checks::Settings {
+        tolerance: number(values, "TOLERANCE").unwrap_or(2.0),
+        min_length: number(values, "MIN_LENGTH").unwrap_or(0.0),
+        do_dangles: flag(values, "DO_DANGLES", true),
+        do_crossings: flag(values, "DO_CROSSINGS", true),
+        do_pseudo: flag(values, "DO_PSEUDO", false),
+    };
+    let findings = line_checks::check_lines(&items, &s);
+    let messages = line_checks::report(items.len(), &s, &findings, lang);
+    let out = json!({"OUTPUT": line_checks::findings_layer(&findings, lang)});
     Ok((out, messages))
 }
 

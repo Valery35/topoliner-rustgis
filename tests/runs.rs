@@ -191,6 +191,12 @@ fn topology_audit_matches_the_module() {
     runs_match_the_module("topologyaudit");
 }
 
+/// 1.02 Проверка топологии линий.
+#[test]
+fn line_audit_matches_the_module() {
+    runs_match_the_module("lineaudit");
+}
+
 /// 2.02 Границы полигонов линиями.
 #[test]
 fn boundaries_match_the_module() {
