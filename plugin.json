@@ -17,6 +17,7 @@
   ],
   "i18n": {
     "ru": {
+      "Tolerance (in layer CRS units)": "Допуск (в единицах CRS слоя)",
       "The layer is not modified.": "Слой не изменяется.",
       "1.01 Polygon topology check": "1.01 Проверка топологии полигонов",
       "A cavity larger than this area is taken as part of the design and is\nnot a finding. This is a pillar, a lake, an unmapped area. A small\nhole in a coverage is a defect, a very large one almost never is.": "Полость крупнее этой площади считается частью замысла и находкой\nне является. Это целик, озеро, незакартированный участок.\nМелкая дыра в покрытии это дефект, очень крупная почти всегда нет.",
@@ -34,7 +35,6 @@
       "The area below which a fragment counts as technical debris. A\nreasonable starting point is the square of the tolerance.": "Площадь, ниже которой фрагмент считается техническим мусором.\nРазумная точка отсчёта это квадрат допуска.",
       "The distance below which a discrepancy counts as a technical error.": "Расстояние, ниже которого расхождение считается технической погрешностью.",
       "The polygon layer to check. The layer is not modified, findings go\nto a separate point layer.": "Полигональный слой, который проверяется.\nСлой не изменяется, находки пишутся в отдельный слой точек.",
-      "Tolerance (in layer CRS units)": "Допуск (в единицах CRS слоя)",
       "About\nTopoliner": "О программе\nTopoliner",
       "About the program: version, a short description and links to the website, GitHub and the Topoliner channels.": "О программе: версия, краткое описание и ссылки на сайт, GitHub и каналы Topoliner.",
       "Topoliner for RustGIS: topology of polygon and line coverages. The tools find violations and tell technical debris from possible meaning. They compute as the QGIS plugin does and are checked against its runs.": "Topoliner для RustGIS: топология полигональных и линейных покрытий. Инструменты находят нарушения и отделяют технический мусор от возможного смысла. Считают так же, как модуль QGIS, и сверяются с его прогонами."
