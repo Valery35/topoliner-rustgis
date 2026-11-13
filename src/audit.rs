@@ -269,19 +269,65 @@ fn safe_point(g: &Geom) -> Option<Pt> {
     Some([0.5 * (x0 + x1), 0.5 * (y0 + y1)])
 }
 
-/// Пары объектов, чьи охваты задевают друг друга. Порядок пар не зависит
-/// от устройства индекса: сначала первый номер, потом второй.
+/// Пары объектов, чьи охваты задевают друг друга.
+///
+/// Сравнивать каждый охват с каждым нельзя: на слое в сотню тысяч
+/// объектов это десять миллиардов проверок. Объекты раскладываются
+/// по сетке с ячейкой в медианный охват, и парами становятся только
+/// соседи по ячейке. Порядок пар от устройства сетки не зависит:
+/// сначала первый номер, потом второй.
 fn close_pairs(boxes: &[Option<(f64, f64, f64, f64)>]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    for i in 0..boxes.len() {
-        let Some(a) = boxes[i] else { continue };
-        for (j, b) in boxes.iter().enumerate().skip(i + 1) {
-            let Some(b) = b else { continue };
-            if a.0 <= b.2 && b.0 <= a.2 && a.1 <= b.3 && b.1 <= a.3 {
-                out.push((i, j));
+    let live: Vec<(usize, (f64, f64, f64, f64))> = boxes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| b.map(|b| (i, b)))
+        .collect();
+    if live.len() < 2 {
+        return Vec::new();
+    }
+    // Ячейка по медианному размеру охвата, как в модуле.
+    let mut sizes: Vec<f64> = live
+        .iter()
+        .take(2000)
+        .map(|(_i, b)| (b.2 - b.0).max(b.3 - b.1))
+        .collect();
+    sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let cell = sizes[sizes.len() / 2].max(1e-6);
+    let at = |v: f64| (v / cell).floor() as i64;
+    // Предохранитель от гигантского охвата при мелкой ячейке.
+    let spread = |b: (f64, f64, f64, f64)| -> (i64, i64, i64, i64) {
+        (at(b.0), at(b.1), at(b.2), at(b.3))
+    };
+    let mut cells: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, b) in &live {
+        let (i0, j0, i1, j1) = spread(*b);
+        let si = ((i1 - i0) / 500).max(1);
+        let sj = ((j1 - j0) / 500).max(1);
+        let mut x = i0;
+        while x <= i1 {
+            let mut y = j0;
+            while y <= j1 {
+                cells.entry((x, y)).or_default().push(*i);
+                y += sj;
+            }
+            x += si;
+        }
+    }
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for bucket in cells.values() {
+        for (k, &i) in bucket.iter().enumerate() {
+            for &j in bucket.iter().skip(k + 1) {
+                let (a, b) = (boxes[i.min(j)], boxes[i.max(j)]);
+                let (Some(a), Some(b)) = (a, b) else { continue };
+                if a.0 <= b.2 && b.0 <= a.2 && a.1 <= b.3 && b.1 <= a.3 {
+                    out.push((i.min(j), i.max(j)));
+                }
             }
         }
     }
+    out.sort_unstable();
+    out.dedup();
     out
 }
 
