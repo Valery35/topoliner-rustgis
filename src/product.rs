@@ -18,7 +18,7 @@ use serde_json::{Value as J, json};
 
 use crate::audit::{self, Settings};
 use crate::rings::segment_length_stats;
-use crate::{arcs, boundaries, clean, coverage, line_checks, snap, topo_fix, values};
+use crate::{arcs, boundaries, clean, coverage, line_checks, simplify, snap, topo_fix, values};
 
 /// Инструменты Topoliner в RustGIS, в порядке панели.
 pub const OPTIONS: Options = Options {
@@ -30,6 +30,7 @@ pub const OPTIONS: Options = Options {
         "linefix",
         "topologyclean",
         "insertnodes",
+        "topologysimplify",
         "boundaries",
         "coverage",
     ],
@@ -61,6 +62,7 @@ impl Product for Topoliner {
             "lineaudit" => line_audit(values, lang),
             "topologyfix" => topology_fix(values, lang),
             "linefix" => line_fix(values, lang),
+            "topologysimplify" => topology_simplify(values, lang),
             "boundaries" => boundaries_of(values, lang),
             "coverage" => coverage_of(values, lang),
             "topologyclean" => topology_clean(values, lang),
@@ -249,6 +251,55 @@ fn line_audit(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
     let findings = line_checks::check_lines(&items, &s);
     let messages = line_checks::report(items.len(), &s, &findings, lang);
     let out = json!({"OUTPUT": line_checks::findings_layer(&findings, lang)});
+    Ok((out, messages))
+}
+
+/// 2.01 Топологическое упрощение.
+fn topology_simplify(values: &J, lang: Lang) -> Result<(J, Vec<String>), Failure> {
+    let layer = input_layer(values, lang)?;
+    let s = simplify::SimplifySettings {
+        tolerance: number(values, "TOLERANCE").unwrap_or(1.0),
+        grid: number(values, "GRID").unwrap_or(1e-6),
+        min_points: values.get("MIN_POINTS").and_then(J::as_u64).unwrap_or(0) as usize,
+        smooth: values.get("SMOOTH").and_then(J::as_u64).unwrap_or(0) as usize,
+        method: match values.get("METHOD").and_then(J::as_u64).unwrap_or(0) {
+            1 => simplify::Method::Visvalingam,
+            _ => simplify::Method::Douglas,
+        },
+    };
+    let flat = simplify::flatten(&layer.items, layer.is_polygon);
+    let measure = |shapes: &[arcs::Parts]| -> f64 {
+        shapes
+            .iter()
+            .map(|parts| {
+                if layer.is_polygon {
+                    crate::backend::area(&crate::backend::geom_of(parts))
+                } else {
+                    parts
+                        .iter()
+                        .filter_map(|p| p.first())
+                        .map(|line| boundaries::length_of(line))
+                        .sum()
+                }
+            })
+            .sum()
+    };
+    let before: Vec<arcs::Parts> = layer.items.iter().map(|(_f, p)| p.clone()).collect();
+    let done = simplify::simplify_topology(&flat.rings, &flat.closed, &s);
+    let after = simplify::rebuild(&layer.items, &flat, &done.rings);
+    let written = after.iter().filter(|p| !p.is_empty()).count();
+    let out = json!({
+        "OUTPUT": clean::shapes_layer(
+            &layer.items, &layer.attrs, &layer.fields, &after, layer.is_polygon),
+    });
+    let outcome = simplify::Outcome {
+        items: layer.items.len(),
+        written,
+        is_polygon: layer.is_polygon,
+        before: measure(&before),
+        after: measure(&after),
+    };
+    let messages = simplify::report(&outcome, &s, &done.stats, lang);
     Ok((out, messages))
 }
 

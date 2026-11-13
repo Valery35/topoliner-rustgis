@@ -236,6 +236,12 @@ fn line_fix_matches_the_module() {
     runs_match_the_module("linefix");
 }
 
+/// 2.01 Топологическое упрощение.
+#[test]
+fn topology_simplify_matches_the_module() {
+    runs_match_the_module("topologysimplify");
+}
+
 /// 2.02 Границы полигонов линиями.
 #[test]
 fn boundaries_match_the_module() {

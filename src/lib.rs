@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod product;
 pub mod rings;
 pub mod rounding;
+pub mod simplify;
 pub mod snap;
 pub mod topo_fix;
 pub mod values;

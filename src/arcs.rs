@@ -91,6 +91,14 @@ pub type Path = Vec<(usize, bool)>;
 /// Раскладывает кольца на дуги. Кольца приходят без повтора первой
 /// вершины в конце и считаются замкнутыми.
 pub fn build_arcs(rings: &[Vec<Pt>], grid: f64) -> (Vec<Arc>, Vec<Path>) {
+    let closed = vec![true; rings.len()];
+    build_arcs_open(rings, &closed, grid)
+}
+
+/// Раскладывает на дуги кольца и разомкнутые линии. У разомкнутой линии
+/// концы являются узлами и остаются неподвижными, как и точки ветвления.
+pub fn build_arcs_open(rings: &[Vec<Pt>], closed: &[bool], grid: f64) -> (Vec<Arc>, Vec<Path>) {
+    let shut = |ri: usize| closed.get(ri).copied().unwrap_or(true);
     let ring_keys: Vec<Vec<Key>> = rings
         .iter()
         .map(|r| r.iter().map(|&p| key_of(p, grid)).collect())
@@ -98,9 +106,15 @@ pub fn build_arcs(rings: &[Vec<Pt>], grid: f64) -> (Vec<Arc>, Vec<Path>) {
 
     // ── Рёбра и их владельцы ────────────────────────────────────────────
     let mut edge_owners: HashMap<(Key, Key), HashSet<usize>> = HashMap::new();
+    let mut endpoints: HashSet<Key> = HashSet::new();
     for (ri, keys) in ring_keys.iter().enumerate() {
         let n = keys.len();
-        for i in 0..n {
+        if !shut(ri) && n >= 1 {
+            endpoints.insert(keys[0]);
+            endpoints.insert(keys[n - 1]);
+        }
+        let last = if shut(ri) { n } else { n.saturating_sub(1) };
+        for i in 0..last {
             let a = keys[i];
             let b = keys[(i + 1) % n];
             if a == b {
@@ -120,9 +134,12 @@ pub fn build_arcs(rings: &[Vec<Pt>], grid: f64) -> (Vec<Arc>, Vec<Path>) {
         around.entry(*b).or_default().push(set);
     }
 
-    // Вершина является узлом, если в ней сходятся не два ребра либо
-    // у сходящихся рёбер разные владельцы.
+    // Вершина является узлом, если в ней сходятся не два ребра, либо
+    // у сходящихся рёбер разные владельцы, либо это конец линии.
     let is_junction = |v: &Key| -> bool {
+        if endpoints.contains(v) {
+            return true;
+        }
         match around.get(v) {
             Some(items) if items.len() == 2 => items[0] != items[1],
             _ => true,
@@ -178,6 +195,29 @@ pub fn build_arcs(rings: &[Vec<Pt>], grid: f64) -> (Vec<Arc>, Vec<Path>) {
             paths.push(Vec::new());
             continue;
         }
+        if !shut(ri) {
+            // Разомкнутая линия: идём от начала к концу, разрезая на узлах.
+            let mut path: Path = Vec::new();
+            let mut i = 0;
+            while i + 1 < n {
+                let mut pts = vec![ring[i]];
+                let mut kseq = vec![keys[i]];
+                let mut j = i + 1;
+                loop {
+                    pts.push(ring[j]);
+                    kseq.push(keys[j]);
+                    if j == n - 1 || is_junction(&keys[j]) {
+                        break;
+                    }
+                    j += 1;
+                }
+                path.push(register(kseq, pts, &mut arcs));
+                i = j;
+            }
+            paths.push(path);
+            continue;
+        }
+
         let starts: Vec<usize> = (0..n).filter(|&i| is_junction(&keys[i])).collect();
         let mut path: Path = Vec::new();
 
