@@ -423,3 +423,77 @@ fn manifest_tools_follow_tools_json() {
     assert!(text.contains("metres of the UTM zone"));
     assert!(text.contains("метрах зоны UTM") || text.contains("метры зоны UTM"));
 }
+
+/// Своя вкладка ленты: все одиннадцать инструментов лежат в её меню,
+/// лишнего в ней нет, и каждая подпись переведена.
+///
+/// Правила раздела `tab` описаны в `docs/plugins.md` самого RustGIS.
+/// Инструмент своего значка не имеет и в ленте выглядит сундуком,
+/// поэтому инструменты стоят в меню, а значки стоят на меню и на команде.
+#[test]
+fn ribbon_tab_holds_every_tool() {
+    let path = root().join("plugin.json");
+    let m: J = serde_json::from_slice(&std::fs::read(&path).expect("plugin.json")).expect("json");
+    let tab = &m["tab"];
+    let ru = &m["i18n"]["ru"];
+    let says = |s: &str| {
+        assert!(
+            ru[s].is_string(),
+            "подпись вкладки без перевода: {s}"
+        );
+        assert!(!s.contains('\n'), "подпись вкладки в одну строку: {s}");
+        assert!((1..=32).contains(&s.chars().count()) || s.ends_with('.'), "длина подписи: {s}");
+    };
+    // Имя вкладки не переводится, оно же имя продукта.
+    assert_eq!(tab["label"], json!("Topoliner"));
+    let groups = tab["groups"].as_array().expect("groups");
+    assert!((1..=8).contains(&groups.len()), "групп: {}", groups.len());
+    // Собираем всё, на что вкладка ссылается.
+    let mut named: Vec<String> = Vec::new();
+    fn walk(item: &J, named: &mut Vec<String>, says: &dyn Fn(&str)) {
+        match item.get("menu").and_then(J::as_str) {
+            Some(label) => {
+                says(label);
+                let icon = item["icon"].as_str().expect("меню без значка");
+                assert!(!icon.is_empty(), "меню без значка: {label}");
+                says(item["help"].as_str().expect("меню без подсказки"));
+                let items = item["items"].as_array().expect("меню без пунктов");
+                assert!((1..=32).contains(&items.len()), "пунктов меню: {label}");
+                for it in items {
+                    walk(it, named, says);
+                }
+            }
+            None => named.push(item.as_str().expect("пункт - строка").to_string()),
+        }
+    }
+    for g in groups {
+        says(g["label"].as_str().expect("группа без подписи"));
+        let items = g["items"].as_array().expect("группа без пунктов");
+        assert!(!items.is_empty() && items.len() <= 48, "пунктов группы");
+        for it in items {
+            walk(it, &mut named, &says);
+        }
+    }
+    // Каждый инструмент продукта стоит во вкладке ровно один раз.
+    let mut tools: Vec<String> = named
+        .iter()
+        .filter_map(|n| n.strip_prefix("tool:").map(str::to_string))
+        .collect();
+    tools.sort();
+    let mut offered: Vec<String> = OPTIONS.offered.iter().map(|s| (*s).to_string()).collect();
+    offered.sort();
+    assert_eq!(tools, offered, "вкладка и состав продукта разошлись");
+    // Остальные пункты - команды манифеста, чужого во вкладке нет.
+    let commands: Vec<&str> = m["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    for n in &named {
+        if n.starts_with("tool:") {
+            continue;
+        }
+        assert!(commands.contains(&n.as_str()), "вкладка зовёт чужое: {n}");
+    }
+}
