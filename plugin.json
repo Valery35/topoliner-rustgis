@@ -5,6 +5,7 @@
   "description": "Topoliner for RustGIS: topology of polygon and line coverages. The tools find violations and tell technical debris from possible meaning. They compute as the QGIS plugin does and are checked against its runs.",
   "author": "Inform++ LLC",
   "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/Valery35/topoliner-rustgis",
   "runtime": "process",
   "session": true,
   "run": { "windows": ["bin/topoliner-rustgis.exe", "rustgis-plugin"] },
