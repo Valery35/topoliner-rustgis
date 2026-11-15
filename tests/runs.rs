@@ -207,6 +207,18 @@ fn runs_match_the_module(tool: &str) {
                 assert_eq!(messages, want_lines, "{case}: журнал");
             } else {
                 assert_eq!(messages.len(), r["report"].as_array().expect("report").len() - 1);
+                // Английского образца у прогона нет, сверять не с чем.
+                // Но русская буква в английском журнале - это строка,
+                // прошедшая мимо перевода, и её видно без образца.
+                for line in &messages {
+                    assert!(
+                        !line.chars().any(|c| ('а'..='я').contains(&c)
+                            || ('А'..='Я').contains(&c)
+                            || c == 'ё'
+                            || c == 'Ё'),
+                        "{case}: русская строка в английском журнале: {line}"
+                    );
+                }
             }
         }
     }

@@ -540,8 +540,8 @@ pub fn report(items: usize, s: &Settings, findings: &[Finding], lang: Lang) -> V
         out.push(format!(
             "{:<40} {:>8} {:>8} {:>12} {:>12}",
             pick("нарушение", "violation"),
-            pick("чинится", "auto"),
-            pick("решать", "operator"),
+            pick("чинится", "auto-fixed"),
+            pick("решать", "to decide"),
             pick("медиана", "median"),
             pick("максимум", "maximum")
         ));

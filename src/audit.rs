@@ -920,8 +920,9 @@ pub fn report(
     out
 }
 
-/// Сводка по видам нарушений таблицей. Названия идут по-английски: так
-/// их печатает модуль у 1.01 и 1.03.
+/// Сводка по видам нарушений таблицей. Названия нарушений идут
+/// по-английски: так их печатает модуль у 1.01 и 1.03. Заголовки
+/// столбцов переводятся, слова взяты из словаря модуля.
 pub fn summary_lines(findings: &[Finding], lang: Lang) -> Vec<String> {
     let summary = summarize(findings);
     if summary.is_empty() {
@@ -929,7 +930,11 @@ pub fn summary_lines(findings: &[Finding], lang: Lang) -> Vec<String> {
     }
     let mut out = vec![format!(
         "{:<40} {:>8} {:>8} {:>12} {:>12}",
-        "нарушение", "чинится", "решать", "медиана", "максимум"
+        tr(lang, "нарушение", "violation"),
+        tr(lang, "чинится", "auto-fixed"),
+        tr(lang, "решать", "to decide"),
+        tr(lang, "медиана", "median"),
+        tr(lang, "максимум", "maximum")
     )];
     let mut order: Vec<&Slot> = summary.iter().collect();
     order.sort_by_key(|s| std::cmp::Reverse(s.auto + s.review));
