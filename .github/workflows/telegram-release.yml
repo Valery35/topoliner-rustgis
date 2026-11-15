@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Метка выпуска целиком, например rustgis-v0.1.0
+        description: Метка выпуска как на GitHub - 0.13.5, v1.44.1, rustgis-v0.5.1
         required: true
 
 jobs:
