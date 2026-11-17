@@ -20,6 +20,12 @@ on:
       tag:
         description: Метка выпуска как на GitHub - 0.13.5, v1.44.1, rustgis-v0.5.1
         required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: Метка выпуска, когда выпуск создан автоматикой
+        required: true
+        type: string
 
 jobs:
   notify:

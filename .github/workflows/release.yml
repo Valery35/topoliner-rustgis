@@ -1,0 +1,86 @@
+# Topoliner для RustGIS - выпуск по метке.
+# Copyright (C) 2026 ООО «Информ++». Лицензия GPL-3.0-or-later.
+#
+# Метка rustgis-v<версия> запускает сборку программы и пакета .rgplugin
+# на Windows, выпуск GitHub с пакетом и сообщение автору в Telegram.
+# Версия в plugin.json должна совпадать с меткой, иначе шаг падает.
+# Упаковку делает сценарий крейта rustgis-kit, он подтягивается сюда
+# отдельным хранилищем.
+#
+# Расширение работает только на Windows, поэтому сборка одна.
+
+name: Release
+
+on:
+  push:
+    tags: ["rustgis-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Пакет и выпуск
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Valery35/rustgis-kit
+          path: kit
+
+      - name: Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo --version
+
+      - name: Версия против метки
+        shell: pwsh
+        run: |
+          $manifest = Get-Content plugin.json -Raw | ConvertFrom-Json
+          $v = $manifest.version
+          $tag = $env:GITHUB_REF_NAME -replace '^rustgis-v', ''
+          "версия $v, метка $tag"
+          if ($v -ne $tag) { throw "метка $tag не совпадает с версией $v" }
+
+      - name: Пакет
+        shell: pwsh
+        run: ./scripts/package.ps1 -Kit (Join-Path $env:GITHUB_WORKSPACE 'kit')
+
+      - name: Заметки из журнала
+        shell: pwsh
+        run: |
+          $v = (Get-Content plugin.json -Raw | ConvertFrom-Json).version
+          $lines = Get-Content CHANGELOG.md -Encoding utf8
+          $idx = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^##\s+$([regex]::Escape($v))\s*$") { $idx = $i; break }
+          }
+          if ($idx -lt 0) { 'Смотри CHANGELOG.md.' | Out-File dist\notes.md -Encoding utf8; exit 0 }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $idx + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^## ') { break }
+            $body.Add($lines[$i])
+          }
+          ($body -join "`n").Trim() | Out-File dist\notes.md -Encoding utf8
+
+      - name: Выпуск GitHub с пакетом
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = (Get-Content plugin.json -Raw | ConvertFrom-Json).version
+          $pkg = "dist/topoliner-$v.rgplugin"
+          if (-not (Test-Path $pkg)) { throw "нет пакета $pkg" }
+          gh release create $env:GITHUB_REF_NAME $pkg --verify-tag --title $env:GITHUB_REF_NAME --notes-file dist/notes.md
+
+  telegram:
+    name: Сообщение автору
+    needs: publish
+    uses: ./.github/workflows/telegram-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
